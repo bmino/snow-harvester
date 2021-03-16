@@ -1,0 +1,23 @@
+{
+  "name": "snow-harvester",
+  "version": "1.0.0",
+  "description": "Harvest that snow!",
+  "main": "Main.js",
+  "scripts": {
+    "start": "node Main.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bmino/snow-harvester.git"
+  },
+  "author": "bmino",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/bmino/snow-harvester/issues"
+  },
+  "homepage": "https://github.com/bmino/snow-harvester#readme",
+  "dependencies": {
+    "web3": "^1.3.4"
+  }
+}
