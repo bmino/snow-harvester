@@ -158,29 +158,21 @@ function handleError(err) {
 
 
 async function convertPNGToWavax(pngQuantity) {
-    // Slimmed down ABI to just include the 'getReserves' method
-    const PANGOLIN_PNG_WAVAX_POOL_ADDRESS = '0xd7538cabbf8605bde1f4901b47b8d42c61de0367';
-    const pangolinPNGWAVAXContract = new web3.eth.Contract(ABI.PANGOLIN_POOL, PANGOLIN_PNG_WAVAX_POOL_ADDRESS);
+    const PANGOLIN_ROUTER_ADDRESS = '0xe54ca86531e17ef3616d22ca28b0d458b6c89106';
+    const PNG_ADDRESS = '0x60781c2586d68229fde47564546784ab3faca982';
+    const WAVAX_ADDRESS = '0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7';
 
-    // reserve0 is PNG, reserve1 is WAVAX
-    const { _reserve0, _reserve1 } = await pangolinPNGWAVAXContract.methods.getReserves().call();
-
-    const reserveIn = web3.utils.toBN(_reserve0);
-    const reserveOut = web3.utils.toBN(_reserve1);
-
-    return Util.convertViaPool(pngQuantity, reserveIn, reserveOut);
+    const routerContract = new web3.eth.Contract(ABI.PANGOLIN_ROUTER, PANGOLIN_ROUTER_ADDRESS);
+    const [input, output] = await routerContract.methods.getAmountsOut(pngQuantity.toString(), [PNG_ADDRESS, WAVAX_ADDRESS]).call();
+    return web3.utils.toBN(output);
 }
 
 async function convertPNGToUSDT(pngQuantity) {
-    // Slimmed down ABI to just include the 'getReserves' method
-    const PANGOLIN_PNG_USDT_POOL_ADDRESS = '0xe8acf438b10a2c09f80aef3ef2858f8e758c98f9';
-    const pangolinPNGUSDTContract = new web3.eth.Contract(ABI.PANGOLIN_POOL, PANGOLIN_PNG_USDT_POOL_ADDRESS);
+    const PANGOLIN_ROUTER_ADDRESS = '0xe54ca86531e17ef3616d22ca28b0d458b6c89106';
+    const PNG_ADDRESS = '0x60781c2586d68229fde47564546784ab3faca982';
+    const USDT_ADDRESS = '0xde3a24028580884448a5397872046a019649b084';
 
-    // reserve0 is PNG, reserve1 is USDT
-    const { _reserve0, _reserve1 } = await pangolinPNGUSDTContract.methods.getReserves().call();
-
-    const reserveIn = web3.utils.toBN(_reserve0);
-    const reserveOut = web3.utils.toBN(_reserve1);
-
-    return Util.convertViaPool(pngQuantity, reserveIn, reserveOut);
+    const routerContract = new web3.eth.Contract(ABI.PANGOLIN_ROUTER, PANGOLIN_ROUTER_ADDRESS);
+    const [input, output] = await routerContract.methods.getAmountsOut(pngQuantity.toString(), [PNG_ADDRESS, USDT_ADDRESS]).call();
+    return web3.utils.toBN(output);
 }

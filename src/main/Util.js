@@ -18,13 +18,6 @@ const Util = {
         }
     },
 
-    convertViaPool(amountIn, reserveIn, reserveOut) {
-        const amountInWithFee = amountIn.muln(977);
-        const numerator = amountInWithFee.mul(reserveOut);
-        const denominator = reserveIn.muln(1000).add(amountInWithFee);
-        return numerator.div(denominator);
-    }
-
 };
 
 module.exports = Util;
