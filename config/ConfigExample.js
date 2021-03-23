@@ -6,7 +6,7 @@ const Config = {
     INTERVAL: 4 * 60 * 60 * 1000, // Every 4 hours
     CONTROLLER: '0xf7b8d9f8a82a7a6dd448398afc5c77744bd6cb85', // v4
     WANTS: [
-        '0xd7538cabbf8605bde1f4901b47b8d42c61de0367', // AVAX-PNG
+        '0x6a803904b9ea0fc982fbb077c7243c244ae05a2d', // AVAX-PNG
         '0x1acf1583bebdca21c8025e172d8e8f2817343d65', // AVAX-ETH
         '0xbbc7fff833d27264aac8806389e02f717a5506c9', // AVAX-LINK
         '0xd8b262c0676e13100b33590f10564b46eef652ad', // AVAX-SUSHI
