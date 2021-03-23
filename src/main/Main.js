@@ -10,27 +10,29 @@ if (!CONFIG.TEST_MODE) {
     console.log(`WARNING!! Test mode is disabled. Real harvesting might begin!!`);
 }
 
-(async () => {
-    const contracts = await initContracts(CONFIG.WANTS);
+// Globals to manage consistent scheduling with a window of variance
+// Do not touch these :)
+let executionWindowCenter = Date.now();
+let executionDrift = 0;
 
-    // Execute once now
-    loop();
 
-    // Schedule main loop
-    setInterval(loop, CONFIG.INTERVAL);
+// Manually trigger first harvest cycle
+harvest();
 
-    function loop() {
-        createHarvests(contracts)
-            .then(addHarvestTx)
-            .then(addHarvestGain)
-            .then(addHarvestGas)
-            .then(filterHarvestByCostVsGain)
-            .then(doHarvesting)
-            .then(logHarvestingResults)
-            .catch(handleError);
-    }
 
-})();
+function harvest() {
+    console.log(`Executing harvest() at ${new Date().toLocaleString()}`);
+    initContracts(CONFIG.WANTS)
+        .then(createHarvests)
+        .then(addHarvestTx)
+        .then(addHarvestGain)
+        .then(addHarvestGas)
+        .then(filterHarvestByCostVsGain)
+        .then(doHarvesting)
+        .then(logHarvestingResults)
+        .then(scheduleNextHarvest)
+        .catch(handleError);
+}
 
 async function initContracts(wantsAddresses) {
     const controllerContract = new web3.eth.Contract(ABI.CONTROLLER, CONFIG.CONTROLLER);
@@ -109,7 +111,7 @@ function addHarvestGas(harvests) {
 
 function filterHarvestByCostVsGain(harvests) {
     return harvests.filter(harvest => {
-        console.log(`Comparing gas cost vs. treasury gain for ${harvest.strategy._address}`);
+        console.log(`Comparing gas cost vs. treasury gain for ${harvest.strategy._address} (${harvest.name})`);
         const costAsAvax = web3.utils.toBN(harvest.gas).mul(web3.utils.toBN(harvest.gasPrice));
         const treasuryGainAsAvax = harvest.gainWAVAX.mul(harvest.treasuryFee).div(harvest.treasuryMax);
         console.log(`Gas cost: ${Util.displayBNasFloat(costAsAvax, 18).toFixed(4)} AVAX`);
@@ -151,6 +153,18 @@ function logHarvestingResults({ results, harvests }) {
 function handleError(err) {
     console.error(err);
     setTimeout(() => process.exit(1), 1000); // Ensure stderr has time to flush buffer
+}
+
+function scheduleNextHarvest() {
+    executionWindowCenter += CONFIG.INTERVAL;
+    executionDrift = Util.randomIntFromInterval(-1 * CONFIG.INTERVAL_WINDOW, CONFIG.INTERVAL_WINDOW);
+    const now = Date.now();
+    const delay = executionWindowCenter - now + executionDrift;
+    console.log();
+    console.log(`New execution window: ${new Date(executionWindowCenter - CONFIG.INTERVAL_WINDOW).toLocaleTimeString()} - ${new Date(executionWindowCenter + CONFIG.INTERVAL_WINDOW).toLocaleTimeString()}`);
+    console.log(`Scheduled next harvest() for ${new Date(now + delay).toLocaleString()}`);
+    console.log();
+    setTimeout(harvest, delay);
 }
 
 
