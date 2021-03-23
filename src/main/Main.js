@@ -10,27 +10,29 @@ if (!CONFIG.TEST_MODE) {
     console.log(`WARNING!! Test mode is disabled. Real harvesting might begin!!`);
 }
 
-(async () => {
-    const contracts = await initContracts(CONFIG.WANTS);
+// Globals to manage consistent scheduling with a window of variance
+// Do not touch these :)
+let executionWindowCenter = Date.now();
+let executionDrift = 0;
 
-    // Execute once now
-    loop();
 
-    // Schedule main loop
-    setInterval(loop, CONFIG.INTERVAL);
+// Manually trigger first harvest cycle
+harvest();
 
-    function loop() {
-        createHarvests(contracts)
-            .then(addHarvestTx)
-            .then(addHarvestGain)
-            .then(addHarvestGas)
-            .then(filterHarvestByCostVsGain)
-            .then(doHarvesting)
-            .then(logHarvestingResults)
-            .catch(handleError);
-    }
 
-})();
+function harvest() {
+    console.log(`Executing harvest() at ${new Date().toLocaleString()}`);
+    initContracts(CONFIG.WANTS)
+        .then(createHarvests)
+        .then(addHarvestTx)
+        .then(addHarvestGain)
+        .then(addHarvestGas)
+        .then(filterHarvestByCostVsGain)
+        .then(doHarvesting)
+        .then(logHarvestingResults)
+        .then(scheduleNextHarvest)
+        .catch(handleError);
+}
 
 async function initContracts(wantsAddresses) {
     const controllerContract = new web3.eth.Contract(ABI.CONTROLLER, CONFIG.CONTROLLER);
@@ -109,7 +111,7 @@ function addHarvestGas(harvests) {
 
 function filterHarvestByCostVsGain(harvests) {
     return harvests.filter(harvest => {
-        console.log(`Comparing gas cost vs. treasury gain for ${harvest.strategy._address}`);
+        console.log(`Comparing gas cost vs. treasury gain for ${harvest.strategy._address} (${harvest.name})`);
         const costAsAvax = web3.utils.toBN(harvest.gas).mul(web3.utils.toBN(harvest.gasPrice));
         const treasuryGainAsAvax = harvest.gainWAVAX.mul(harvest.treasuryFee).div(harvest.treasuryMax);
         console.log(`Gas cost: ${Util.displayBNasFloat(costAsAvax, 18).toFixed(4)} AVAX`);
@@ -153,34 +155,38 @@ function handleError(err) {
     setTimeout(() => process.exit(1), 1000); // Ensure stderr has time to flush buffer
 }
 
+function scheduleNextHarvest() {
+    executionWindowCenter += CONFIG.INTERVAL;
+    executionDrift = Util.randomIntFromInterval(-1 * CONFIG.INTERVAL_WINDOW, CONFIG.INTERVAL_WINDOW);
+    const now = Date.now();
+    const delay = executionWindowCenter - now + executionDrift;
+    console.log();
+    console.log(`New execution window: ${new Date(executionWindowCenter - CONFIG.INTERVAL_WINDOW).toLocaleTimeString()} - ${new Date(executionWindowCenter + CONFIG.INTERVAL_WINDOW).toLocaleTimeString()}`);
+    console.log(`Scheduled next harvest() for ${new Date(now + delay).toLocaleString()}`);
+    console.log();
+    setTimeout(harvest, delay);
+}
+
 
 ///// Helper functions
 
 
 async function convertPNGToWavax(pngQuantity) {
-    // Slimmed down ABI to just include the 'getReserves' method
-    const PANGOLIN_PNG_WAVAX_POOL_ADDRESS = '0xd7538cabbf8605bde1f4901b47b8d42c61de0367';
-    const pangolinPNGWAVAXContract = new web3.eth.Contract(ABI.PANGOLIN_POOL, PANGOLIN_PNG_WAVAX_POOL_ADDRESS);
+    const PANGOLIN_ROUTER_ADDRESS = '0xe54ca86531e17ef3616d22ca28b0d458b6c89106';
+    const PNG_ADDRESS = '0x60781c2586d68229fde47564546784ab3faca982';
+    const WAVAX_ADDRESS = '0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7';
 
-    // reserve0 is PNG, reserve1 is WAVAX
-    const { _reserve0, _reserve1 } = await pangolinPNGWAVAXContract.methods.getReserves().call();
-
-    const reserveIn = web3.utils.toBN(_reserve0);
-    const reserveOut = web3.utils.toBN(_reserve1);
-
-    return Util.convertViaPool(pngQuantity, reserveIn, reserveOut);
+    const routerContract = new web3.eth.Contract(ABI.PANGOLIN_ROUTER, PANGOLIN_ROUTER_ADDRESS);
+    const [input, output] = await routerContract.methods.getAmountsOut(pngQuantity.toString(), [PNG_ADDRESS, WAVAX_ADDRESS]).call();
+    return web3.utils.toBN(output);
 }
 
 async function convertPNGToUSDT(pngQuantity) {
-    // Slimmed down ABI to just include the 'getReserves' method
-    const PANGOLIN_PNG_USDT_POOL_ADDRESS = '0xe8acf438b10a2c09f80aef3ef2858f8e758c98f9';
-    const pangolinPNGUSDTContract = new web3.eth.Contract(ABI.PANGOLIN_POOL, PANGOLIN_PNG_USDT_POOL_ADDRESS);
+    const PANGOLIN_ROUTER_ADDRESS = '0xe54ca86531e17ef3616d22ca28b0d458b6c89106';
+    const PNG_ADDRESS = '0x60781c2586d68229fde47564546784ab3faca982';
+    const USDT_ADDRESS = '0xde3a24028580884448a5397872046a019649b084';
 
-    // reserve0 is PNG, reserve1 is USDT
-    const { _reserve0, _reserve1 } = await pangolinPNGUSDTContract.methods.getReserves().call();
-
-    const reserveIn = web3.utils.toBN(_reserve0);
-    const reserveOut = web3.utils.toBN(_reserve1);
-
-    return Util.convertViaPool(pngQuantity, reserveIn, reserveOut);
+    const routerContract = new web3.eth.Contract(ABI.PANGOLIN_ROUTER, PANGOLIN_ROUTER_ADDRESS);
+    const [input, output] = await routerContract.methods.getAmountsOut(pngQuantity.toString(), [PNG_ADDRESS, USDT_ADDRESS]).call();
+    return web3.utils.toBN(output);
 }
