@@ -20,8 +20,15 @@ const Util = {
 
     randomIntFromInterval(min, max) {
         return Math.floor(Math.random() * (max - min + 1) + min);
-    }
+    },
 
+    cchainTransactionLink(tx) {
+        return `https://cchain.explorer.avax.network/tx/${tx}`;
+    },
+
+    cchainAddressLink(address) {
+        return `https://cchain.explorer.avax.network/address/${address}`;
+    },
 
 };
 
