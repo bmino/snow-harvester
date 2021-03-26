@@ -17,7 +17,7 @@ let executionWindowCenter = Date.now();
 let executionDrift = 0;
 
 // Manually trigger first harvest cycle
-DiscordBot.login(CONFIG.BOT.TOKEN).then(harvest);
+DiscordBot.login(CONFIG.DISCORD.TOKEN).then(harvest);
 
 
 function harvest() {
@@ -143,7 +143,7 @@ function logHarvestingResults({ results, harvests }) {
 
 async function doDiscordUpdate({ results, harvests }) {
     if (!CONFIG.EXECUTION.ENABLED) return console.log(`Discord notifications are disabled while in test mode`);
-    if (!CONFIG.BOT.ENABLED) return console.log(`Did not notify discord. Set CONFIG.BOT.ENABLED to send notifications to #harvests`);
+    if (!CONFIG.DISCORD.ENABLED) return console.log(`Did not notify discord. Set CONFIG.DISCORD.ENABLED to send notifications to #harvests`);
 
     for (let i = 0; i< results.length; i++) {
         const {reason, value} = results[i];
@@ -155,7 +155,7 @@ async function doDiscordUpdate({ results, harvests }) {
             msg.push(`Reinvested:  ${Util.displayBNasFloat(harvest.harvestable, 18).toFixed(2)} PNG ($${Util.displayBNasFloat(harvest.gainUSDT, 6).toFixed(2)})`);
             msg.push(`Transaction: ${value.transactionHash}`);
             msg.push('```');
-            DiscordBot.sendMessage(msg.join("\n"), CONFIG.BOT.CHANNEL);
+            DiscordBot.sendMessage(msg.join("\n"), CONFIG.DISCORD.CHANNEL);
         }
     }
 }
