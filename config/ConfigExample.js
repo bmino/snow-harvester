@@ -11,7 +11,7 @@ const Config = {
         INTERVAL: 4 * HOUR,
         INTERVAL_WINDOW: 15 * MINUTE,
     },
-    BOT: {
+    DISCORD: {
         ENABLED: false,
         TOKEN: '',
         CHANNEL: '818943563759878196', // #harvests
