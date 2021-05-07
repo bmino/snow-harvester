@@ -4,6 +4,7 @@ const Web3 = require('web3');
 const web3 = new Web3(new Web3.providers.HttpProvider('https://api.avax.network/ext/bc/C/rpc'));
 const Util = require('./Util');
 const DiscordBot = require('./DiscordBot');
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 // Authenticate our wallet
 if (CONFIG.EXECUTION.ENABLED) {
@@ -39,13 +40,15 @@ async function initHarvests() {
     const gasPrice = await web3.eth.getGasPrice();
 
     for (const [wantAddress, friendlyName] of Object.entries(CONFIG.WANTS)) {
-        const { controller, snowglobe, strategy } = await initializeContracts(CONFIG.CONTROLLERS, wantAddress);
+        const { controller, want, snowglobe, strategy } = await initializeContracts(CONFIG.CONTROLLERS, wantAddress);
+        const snowglobeSymbol = await snowglobe.methods.symbol().call();
 
         harvests.push({
             name: friendlyName,
-            wantAddress,
             controller,
+            want,
             snowglobe,
+            snowglobeSymbol,
             strategy,
             gasPrice,
         });
@@ -263,8 +266,9 @@ async function initializeContracts(controllerAddresses, wantAddress) {
         const snowglobeAddress = await controller.methods.globes(wantAddress).call();
         const strategyAddress = await controller.methods.strategies(wantAddress).call();
 
-        if (!!strategyAddress && !!snowglobeAddress) return {
+        if (strategyAddress !== ZERO_ADDRESS && snowglobeAddress !== ZERO_ADDRESS) return {
             controller,
+            want: new web3.eth.Contract(ABI.PANGOLIN_POOL, wantAddress),
             snowglobe: new web3.eth.Contract(ABI.SNOWGLOBE, snowglobeAddress),
             strategy: new web3.eth.Contract(ABI.STRATEGY, strategyAddress),
         };
