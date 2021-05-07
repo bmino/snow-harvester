@@ -68,7 +68,7 @@ function addRequirements(harvests) {
     });
     return Promise.all(harvests.map(addHarvestFees))
         .catch(err => {
-            console.error(`Error fetching information from strategy`);
+            console.error(`Error fetching requirements from strategy`);
             throw err;
         });
 }
@@ -100,11 +100,11 @@ function addTx(harvests) {
         });
 }
 
-function addGas(harvests) {
+async function addGas(harvests) {
     const addHarvestGas = async (harvest) => ({
         ...harvest,
-        harvestGas: 0, //await harvest.harvestTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
-        earnGas: 0, //await harvest.earnTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
+        harvestGas: await harvest.harvestTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
+        earnGas: await harvest.earnTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
     });
     return Promise.all(harvests.map(addHarvestGas))
         .catch(err => {
@@ -115,7 +115,7 @@ function addGas(harvests) {
 
 function addDecisions(harvests) {
     const addHarvestDecision = (harvest) => {
-        console.log(`Comparing gas cost vs. treasury gain for ${harvest.strategy._address} (${harvest.name})`);
+        console.log(`Determining execution decisions for ${harvest.name}`);
         const cost = web3.utils.toBN(harvest.harvestGas).mul(web3.utils.toBN(harvest.gasPrice));
         const gain = harvest.gainWAVAX.mul(harvest.treasuryFee).div(harvest.treasuryMax);
         const harvestDecision = cost.lt(gain);
@@ -133,11 +133,12 @@ function addDecisions(harvests) {
 
 
 async function doHarvesting(harvests) {
-    const nonce = await web3.eth.getTransactionCount(CONFIG.WALLET.ADDRESS);
-    const executeHarvestTx = async (harvest, i) => {
+    let nonce = await web3.eth.getTransactionCount(CONFIG.WALLET.ADDRESS);
+    const executeHarvestTx = async (harvest) => {
+        if (!harvest.harvestDecision) return null;
         if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would have harvested strategy ${harvest.strategy._address}. Set CONFIG.EXECUTION.ENABLED to enable harvesting`);
         console.log(`Harvesting strategy address: ${harvest.strategy._address} (${harvest.name}) ...`);
-        return await harvest.harvestTx.send({ from: CONFIG.WALLET.ADDRESS, gas: harvest.harvestGas, gasPrice: harvest.gasPrice, nonce: nonce + i });
+        return await harvest.harvestTx.send({ from: CONFIG.WALLET.ADDRESS, gas: harvest.harvestGas, gasPrice: harvest.gasPrice, nonce: nonce++ });
     };
     const results = await Promise.allSettled(harvests.map(executeHarvestTx));
     logHarvestingResults({ results, harvests });
@@ -146,11 +147,12 @@ async function doHarvesting(harvests) {
 }
 
 async function doEarning(harvests) {
-    const nonce = await web3.eth.getTransactionCount(CONFIG.WALLET.ADDRESS);
-    const executeEarnTx = async (harvest, i) => {
+    let nonce = await web3.eth.getTransactionCount(CONFIG.WALLET.ADDRESS);
+    const executeEarnTx = async (harvest) => {
+        if (!harvest.earnDecision) return null;
         if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would have swept ${harvest.snowglobe._address}. Set CONFIG.EXECUTION.ENABLED to enable sweeping`);
-        console.log(`Sweeping controller address: ${harvest.strategy._address} (${harvest.name}) ...`);
-        return await harvest.earnTx.send({ from: CONFIG.WALLET.ADDRESS, gas: harvest.earnGas, gasPrice: harvest.gasPrice, nonce: nonce + i });
+        console.log(`Sweeping snowglobe address: ${harvest.snowglobe._address} (${harvest.name}) ...`);
+        return await harvest.earnTx.send({ from: CONFIG.WALLET.ADDRESS, gas: harvest.earnGas, gasPrice: harvest.gasPrice, nonce: nonce++ });
     };
 
     const results = await Promise.allSettled(harvests.map(executeEarnTx));
@@ -161,9 +163,10 @@ async function doEarning(harvests) {
 
 
 function logHarvestingResults({ results, harvests }) {
-    for (let i = 0; i< results.length; i++) {
-        const {reason, value} = results[i];
+    for (let i = 0; i < results.length; i++) {
         const harvest = harvests[i];
+        if (!harvest.harvestDecision) continue;
+        const {reason, value} = results[i];
         if (value || !CONFIG.EXECUTION.ENABLED) {
             // Successfully called harvest() or a test run
             console.log(`------------------------------------------------------------`);
@@ -180,14 +183,15 @@ function logHarvestingResults({ results, harvests }) {
 }
 
 function logEarnResults({ results, harvests }) {
-    for (let i = 0; i< results.length; i++) {
-        const {reason, value} = results[i];
+    for (let i = 0; i < results.length; i++) {
         const harvest = harvests[i];
+        if (!harvest.earnDecision) continue;
+        const {reason, value} = results[i];
         if (value || !CONFIG.EXECUTION.ENABLED) {
             // Successfully called earn() or a test run
             console.log(`------------------------------------------------------------`);
             console.log(`Snowglobe:   ${harvest.name} (${value?.to ?? harvest.snowglobe._address})`);
-            console.log(`Swept:       ${Util.displayBNasFloat(harvest.available, 18).toFixed(2)} sPGL`);
+            console.log(`Swept:       ${Util.displayBNasFloat(harvest.available, 18).toFixed(2)} ${harvest.snowglobeSymbol}`);
             console.log(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
         } else {
             // Failed to execute earn()
@@ -228,10 +232,10 @@ async function discordEarnUpdate({ results, harvests }) {
             const msg = [];
             msg.push('```');
             console.log(`Snowglobe:   ${harvest.name}`);
-            console.log(`Swept:       ${Util.displayBNasFloat(harvest.available, 18).toFixed(2)} sPGL`);
+            console.log(`Swept:       ${Util.displayBNasFloat(harvest.available, 18).toFixed(2)} ${harvest.snowglobeSymbol}`);
             console.log(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
             msg.push('```');
-            DiscordBot.sendMessage(msg.join("\n"), CONFIG.DISCORD.SWEEPS);
+            DiscordBot.sendMessage(msg.join("\n"), CONFIG.DISCORD.HARVESTS);
         }
     }
 }
