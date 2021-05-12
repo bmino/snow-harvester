@@ -1,6 +1,6 @@
 const Util = {
 
-    displayBNasFloat(bigNumber, decimals) {
+    displayBNasFloat(bigNumber, decimals, formattingDecimals = 2) {
         const stringNumber = bigNumber.toString();
         const isNegative = stringNumber[0] === '-';
         const unsignedString = stringNumber.replace('-', '');
@@ -11,10 +11,12 @@ const Util = {
 
         if (decimals === 0) {
             // if (unsignedString.replace(/0+$/, '').length >= 18) logger.execution.warn(`Converting ${wholePartString} will lose precision`);
-            return parseInt(wholePartString);
+            const int = parseInt(wholePartString);
+            return parseFloat(int.toFixed(formattingDecimals)).toLocaleString();
         } else {
             // if (unsignedString.replace(/0+$/, '').length >= 18) logger.execution.warn(`Converting ${wholePartString}.${fractionalPartString} will lose precision`);
-            return parseFloat(`${wholePartString}.${fractionalPartString}`);
+            const float = parseFloat(`${wholePartString}.${fractionalPartString}`);
+            return parseFloat(float.toFixed(formattingDecimals)).toLocaleString();
         }
     },
 

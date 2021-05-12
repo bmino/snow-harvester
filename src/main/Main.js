@@ -42,11 +42,13 @@ async function initHarvests() {
     for (const [wantAddress, friendlyName] of Object.entries(CONFIG.WANTS)) {
         const { controller, want, snowglobe, strategy } = await initializeContracts(CONFIG.CONTROLLERS, wantAddress);
         const snowglobeSymbol = await snowglobe.methods.symbol().call();
+        const wantSymbol = await want.methods.symbol().call();
 
         harvests.push({
             name: friendlyName,
             controller,
             want,
+            wantSymbol,
             snowglobe,
             snowglobeSymbol,
             strategy,
@@ -65,6 +67,7 @@ function addRequirements(harvests) {
         treasuryMax: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
         balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
         available: web3.utils.toBN(await harvest.snowglobe.methods.available().call()),
+        wantShareDAI: await getWantShareAsDAI(harvest.want),
     });
     return Promise.all(harvests.map(addHarvestFees))
         .catch(err => {
@@ -77,12 +80,13 @@ function addCalculations(harvests) {
     const addHarvestGain = async (harvest) => ({
         ...harvest,
         gainWAVAX: await convertPNGToWavax(harvest.harvestable),
-        gainUSDT: await convertPNGToUSDT(harvest.harvestable),
+        gainDAI: await convertPNGToDAI(harvest.harvestable),
         ratio: harvest.available.muln(100).div(harvest.balance),
+        availableDAI: harvest.wantShareDAI.mul(harvest.available),
     });
     return Promise.all(harvests.map(addHarvestGain))
         .catch(err => {
-            console.error(`Error adding harvest gain`);
+            console.error(`Error adding calculations`);
             throw err;
         });
 }
@@ -95,7 +99,7 @@ function addTx(harvests) {
     });
     return Promise.all(harvests.map(addHarvestTx))
         .catch(err => {
-            console.error(`Error adding harvest tx`);
+            console.error(`Error adding tx`);
             throw err;
         });
 }
@@ -108,7 +112,7 @@ async function addGas(harvests) {
     });
     return Promise.all(harvests.map(addHarvestGas))
         .catch(err => {
-            console.error(`Error adding harvest gas`);
+            console.error(`Error adding gas`);
             throw err;
         });
 }
@@ -118,9 +122,10 @@ function addDecisions(harvests) {
         console.log(`Determining execution decisions for ${harvest.name}`);
         const cost = web3.utils.toBN(harvest.harvestGas).mul(web3.utils.toBN(harvest.gasPrice));
         const gain = harvest.gainWAVAX.mul(harvest.treasuryFee).div(harvest.treasuryMax);
+        const FIVE_THOUSAND_DAI = web3.utils.toBN('5000' + '0'.repeat(18));
         const harvestDecision = cost.lt(gain);
         console.log(`Harvest decision: ${harvestDecision}`);
-        const earnDecision = harvest.ratio.gten(1);
+        const earnDecision = harvest.ratio.gten(1) && harvest.availableDAI.gt(FIVE_THOUSAND_DAI);
         console.log(`Earn decision: ${earnDecision}`);
         return {
             ...harvest,
@@ -136,10 +141,11 @@ async function doHarvesting(harvests) {
     let nonce = await web3.eth.getTransactionCount(CONFIG.WALLET.ADDRESS);
     const executeHarvestTx = async (harvest) => {
         if (!harvest.harvestDecision) return null;
-        if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would have harvested strategy ${harvest.strategy._address}. Set CONFIG.EXECUTION.ENABLED to enable harvesting`);
+        if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would have harvested strategy ${harvest.name} (${harvest.strategy._address}). Set CONFIG.EXECUTION.ENABLED to enable harvesting`);
         console.log(`Harvesting strategy address: ${harvest.strategy._address} (${harvest.name}) ...`);
         return await harvest.harvestTx.send({ from: CONFIG.WALLET.ADDRESS, gas: harvest.harvestGas, gasPrice: harvest.gasPrice, nonce: nonce++ });
     };
+
     const results = await Promise.allSettled(harvests.map(executeHarvestTx));
     logHarvestingResults({ results, harvests });
     await discordHarvestUpdate({ results, harvests });
@@ -171,7 +177,7 @@ function logHarvestingResults({ results, harvests }) {
             // Successfully called harvest() or a test run
             console.log(`------------------------------------------------------------`);
             console.log(`Strategy:    ${harvest.name} (${value?.to ?? harvest.strategy._address})`);
-            console.log(`Reinvested:  ${Util.displayBNasFloat(harvest.harvestable, 18).toFixed(2)} PNG ($${Util.displayBNasFloat(harvest.gainUSDT, 6).toFixed(2)})`);
+            console.log(`Reinvested:  ${Util.displayBNasFloat(harvest.harvestable, 18)} PNG ($${Util.displayBNasFloat(harvest.gainDAI, 18)})`);
             console.log(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
         } else {
             // Failed to execute harvest()
@@ -191,7 +197,7 @@ function logEarnResults({ results, harvests }) {
             // Successfully called earn() or a test run
             console.log(`------------------------------------------------------------`);
             console.log(`Snowglobe:   ${harvest.name} (${value?.to ?? harvest.snowglobe._address})`);
-            console.log(`Swept:       ${Util.displayBNasFloat(harvest.available, 18).toFixed(2)} ${harvest.snowglobeSymbol}`);
+            console.log(`Swept:       ${Util.displayBNasFloat(harvest.available, 18)} ${harvest.wantSymbol} ($${Util.displayBNasFloat(harvest.availableDAI, 18)})`);
             console.log(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
         } else {
             // Failed to execute earn()
@@ -213,7 +219,7 @@ async function discordHarvestUpdate({ results, harvests }) {
             const msg = [];
             msg.push('```');
             msg.push(`Strategy:    ${harvest.name}`);
-            msg.push(`Reinvested:  ${Util.displayBNasFloat(harvest.harvestable, 18).toFixed(2)} PNG ($${Util.displayBNasFloat(harvest.gainUSDT, 6).toFixed(2)})`);
+            msg.push(`Reinvested:  ${Util.displayBNasFloat(harvest.harvestable, 18)} PNG ($${Util.displayBNasFloat(harvest.gainDAI, 18)})`);
             msg.push(`Transaction: ${value.transactionHash}`);
             msg.push('```');
             DiscordBot.sendMessage(msg.join("\n"), CONFIG.DISCORD.HARVESTS);
@@ -232,7 +238,7 @@ async function discordEarnUpdate({ results, harvests }) {
             const msg = [];
             msg.push('```');
             console.log(`Snowglobe:   ${harvest.name}`);
-            console.log(`Swept:       ${Util.displayBNasFloat(harvest.available, 18).toFixed(2)} ${harvest.snowglobeSymbol}`);
+            console.log(`Swept:       ${Util.displayBNasFloat(harvest.available, 18)} ${harvest.wantSymbol} ($${Util.displayBNasFloat(harvest.availableDAI, 18)})`);
             console.log(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
             msg.push('```');
             DiscordBot.sendMessage(msg.join("\n"), CONFIG.DISCORD.HARVESTS);
@@ -280,6 +286,35 @@ async function initializeContracts(controllerAddresses, wantAddress) {
     throw new Error(`Could not identify a strategy & snowglobe for want address ${wantAddress}`);
 }
 
+async function getWantShareAsDAI(wantContract) {
+    const WAVAX_ADDRESS = '0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7';
+    const PNG_ADDRESS = '0x60781c2586d68229fde47564546784ab3faca982';
+
+    const token0Address = (await wantContract.methods.token0().call()).toLowerCase();
+    const token1Address = (await wantContract.methods.token1().call()).toLowerCase();
+    const { _reserve0, _reserve1 } = await wantContract.methods.getReserves().call();
+    const reserve0 = web3.utils.toBN(_reserve0);
+    const reserve1 = web3.utils.toBN(_reserve1);
+    const totalSupply = web3.utils.toBN(await wantContract.methods.totalSupply().call());
+
+    if (token0Address === WAVAX_ADDRESS) {
+        const tvlDAI = await convertWAVAXToDAI(reserve0.muln(2));
+        return tvlDAI.div(totalSupply);
+    } else if (token1Address === WAVAX_ADDRESS) {
+        const tvlDAI = await convertWAVAXToDAI(reserve1.muln(2));
+        return tvlDAI.div(totalSupply);
+    } else if (token0Address === PNG_ADDRESS) {
+        const tvlDAI = await convertPNGToDAI(reserve0.muln(2));
+        return tvlDAI.div(totalSupply);
+    } else if (token1Address === PNG_ADDRESS) {
+        const tvlDAI = await convertPNGToDAI(reserve1.muln(2));
+        return tvlDAI.div(totalSupply);
+    } else {
+        console.error(`Could not convert want address ${wantContract._address} to USDT`);
+        return web3.utils.toBN('0');
+    }
+}
+
 async function convertPNGToWavax(pngQuantity) {
     const PANGOLIN_ROUTER_ADDRESS = '0xe54ca86531e17ef3616d22ca28b0d458b6c89106';
     const PNG_ADDRESS = '0x60781c2586d68229fde47564546784ab3faca982';
@@ -290,12 +325,22 @@ async function convertPNGToWavax(pngQuantity) {
     return web3.utils.toBN(output);
 }
 
-async function convertPNGToUSDT(pngQuantity) {
+async function convertPNGToDAI(pngQuantity) {
     const PANGOLIN_ROUTER_ADDRESS = '0xe54ca86531e17ef3616d22ca28b0d458b6c89106';
     const PNG_ADDRESS = '0x60781c2586d68229fde47564546784ab3faca982';
-    const USDT_ADDRESS = '0xde3a24028580884448a5397872046a019649b084';
+    const DAI_ADDRESS = '0xba7deebbfc5fa1100fb055a87773e1e99cd3507a';
 
     const routerContract = new web3.eth.Contract(ABI.PANGOLIN_ROUTER, PANGOLIN_ROUTER_ADDRESS);
-    const [input, output] = await routerContract.methods.getAmountsOut(pngQuantity.toString(), [PNG_ADDRESS, USDT_ADDRESS]).call();
+    const [input, output] = await routerContract.methods.getAmountsOut(pngQuantity.toString(), [PNG_ADDRESS, DAI_ADDRESS]).call();
+    return web3.utils.toBN(output);
+}
+
+async function convertWAVAXToDAI(pngQuantity) {
+    const PANGOLIN_ROUTER_ADDRESS = '0xe54ca86531e17ef3616d22ca28b0d458b6c89106';
+    const WAVAX_ADDRESS = '0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7';
+    const DAI_ADDRESS = '0xba7deebbfc5fa1100fb055a87773e1e99cd3507a';
+
+    const routerContract = new web3.eth.Contract(ABI.PANGOLIN_ROUTER, PANGOLIN_ROUTER_ADDRESS);
+    const [input, output] = await routerContract.methods.getAmountsOut(pngQuantity.toString(), [WAVAX_ADDRESS, DAI_ADDRESS]).call();
     return web3.utils.toBN(output);
 }
