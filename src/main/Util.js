@@ -1,7 +1,15 @@
+const Web3 = require('web3');
+
 const Util = {
 
-    displayBNasFloat(bigNumber, decimals, formattingDecimals = 2) {
-        const stringNumber = bigNumber.toString();
+    BN_TEN: Web3.utils.toBN(10),
+    BN_ZERO: Web3.utils.toBN(0),
+
+    convertBNtoFloat(bigNumber, decimals) {
+        return Util.convertStringToFloat(bigNumber.toString(), decimals);
+    },
+
+    convertStringToFloat(stringNumber, decimals) {
         const isNegative = stringNumber[0] === '-';
         const unsignedString = stringNumber.replace('-', '');
         const zeroPadding = '0'.repeat(Math.max(decimals - unsignedString.length, 0));
@@ -11,13 +19,24 @@ const Util = {
 
         if (decimals === 0) {
             // if (unsignedString.replace(/0+$/, '').length >= 18) logger.execution.warn(`Converting ${wholePartString} will lose precision`);
-            const int = parseInt(wholePartString);
-            return parseFloat(int.toFixed(formattingDecimals)).toLocaleString();
+            return parseInt(wholePartString);
         } else {
             // if (unsignedString.replace(/0+$/, '').length >= 18) logger.execution.warn(`Converting ${wholePartString}.${fractionalPartString} will lose precision`);
-            const float = parseFloat(`${wholePartString}.${fractionalPartString}`);
-            return parseFloat(float.toFixed(formattingDecimals)).toLocaleString();
+            return parseFloat(`${wholePartString}.${fractionalPartString}`);
         }
+    },
+
+    displayBNasFloat(bigNumber, decimals, formattingDecimals = 2) {
+        const float = Util.convertBNtoFloat(bigNumber, decimals);
+        return parseFloat(float.toFixed(formattingDecimals)).toLocaleString('en-US', { maximumFractionDigits: 20 });
+    },
+
+    offset(decimals) {
+        return Web3.utils.toBN('1' + '0'.repeat(decimals));
+    },
+
+    wait(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
     },
 
     randomIntFromInterval(min, max) {

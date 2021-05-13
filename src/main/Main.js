@@ -5,6 +5,9 @@ const web3 = new Web3(new Web3.providers.HttpProvider('https://api.avax.network/
 const Util = require('./Util');
 const DiscordBot = require('./DiscordBot');
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+const WAVAX_ADDRESS = '0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7';
+const PNG_ADDRESS = '0x60781c2586d68229fde47564546784ab3faca982';
+const DAI_ADDRESS = '0xba7deebbfc5fa1100fb055a87773e1e99cd3507a';
 
 // Authenticate our wallet
 if (CONFIG.EXECUTION.ENABLED) {
@@ -43,12 +46,14 @@ async function initHarvests() {
         const { controller, want, snowglobe, strategy } = await initializeContracts(CONFIG.CONTROLLERS, wantAddress);
         const snowglobeSymbol = await snowglobe.methods.symbol().call();
         const wantSymbol = await want.methods.symbol().call();
+        const wantDecimals = parseInt(await want.methods.decimals().call());
 
         harvests.push({
             name: friendlyName,
             controller,
             want,
             wantSymbol,
+            wantDecimals,
             snowglobe,
             snowglobeSymbol,
             strategy,
@@ -67,7 +72,9 @@ function addRequirements(harvests) {
         treasuryMax: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
         balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
         available: web3.utils.toBN(await harvest.snowglobe.methods.available().call()),
-        wantShareDAI: await getWantShareAsDAI(harvest.want),
+        priceWAVAX: await estimatePriceOfAsset(WAVAX_ADDRESS, 18),
+        pricePNG: await estimatePriceOfAsset(PNG_ADDRESS, 18),
+        priceWant: await getPoolShareAsUSD(harvest.want),
     });
     return Promise.all(harvests.map(addHarvestFees))
         .catch(err => {
@@ -79,10 +86,10 @@ function addRequirements(harvests) {
 function addCalculations(harvests) {
     const addHarvestGain = async (harvest) => ({
         ...harvest,
-        gainWAVAX: await convertPNGToWavax(harvest.harvestable),
-        gainDAI: await convertPNGToDAI(harvest.harvestable),
+        gainWAVAX: harvest.harvestable.mul(harvest.pricePNG).mul(harvest.priceWAVAX).div(Util.offset(18 * 2)),
+        gainUSD: harvest.harvestable.mul(harvest.pricePNG).div(Util.offset(18)),
         ratio: harvest.available.muln(100).div(harvest.balance),
-        availableDAI: harvest.wantShareDAI.mul(harvest.available),
+        availableUSD: harvest.available.mul(harvest.priceWant).div(Util.offset(harvest.wantDecimals)),
     });
     return Promise.all(harvests.map(addHarvestGain))
         .catch(err => {
@@ -122,10 +129,10 @@ function addDecisions(harvests) {
         console.log(`Determining execution decisions for ${harvest.name}`);
         const cost = web3.utils.toBN(harvest.harvestGas).mul(web3.utils.toBN(harvest.gasPrice));
         const gain = harvest.gainWAVAX.mul(harvest.treasuryFee).div(harvest.treasuryMax);
-        const FIVE_THOUSAND_DAI = web3.utils.toBN('5000' + '0'.repeat(18));
+        const FIVE_THOUSAND_USD = web3.utils.toBN('5000' + '0'.repeat(18));
         const harvestDecision = cost.lt(gain);
         console.log(`Harvest decision: ${harvestDecision}`);
-        const earnDecision = harvest.ratio.gten(1) && harvest.availableDAI.gt(FIVE_THOUSAND_DAI);
+        const earnDecision = harvest.ratio.gten(1) && harvest.availableUSD.gt(FIVE_THOUSAND_USD);
         console.log(`Earn decision: ${earnDecision}`);
         return {
             ...harvest,
@@ -153,6 +160,8 @@ async function doHarvesting(harvests) {
 }
 
 async function doEarning(harvests) {
+    await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning earn() calls for the provider to sync the nonce
+
     let nonce = await web3.eth.getTransactionCount(CONFIG.WALLET.ADDRESS);
     const executeEarnTx = async (harvest) => {
         if (!harvest.earnDecision) return null;
@@ -173,11 +182,11 @@ function logHarvestingResults({ results, harvests }) {
         const harvest = harvests[i];
         if (!harvest.harvestDecision) continue;
         const {reason, value} = results[i];
+        console.log(`--------------------------------------------------------------------`);
         if (value || !CONFIG.EXECUTION.ENABLED) {
             // Successfully called harvest() or a test run
-            console.log(`------------------------------------------------------------`);
             console.log(`Strategy:    ${harvest.name} (${value?.to ?? harvest.strategy._address})`);
-            console.log(`Reinvested:  ${Util.displayBNasFloat(harvest.harvestable, 18)} PNG ($${Util.displayBNasFloat(harvest.gainDAI, 18)})`);
+            console.log(`Reinvested:  ${Util.displayBNasFloat(harvest.harvestable, 18)} PNG ($${Util.displayBNasFloat(harvest.gainUSD, 18)})`);
             console.log(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
         } else {
             // Failed to execute harvest()
@@ -185,6 +194,7 @@ function logHarvestingResults({ results, harvests }) {
             console.error(reason);
         }
     }
+    console.log(`--------------------------------------------------------------------`);
     return { results, harvests };
 }
 
@@ -193,11 +203,11 @@ function logEarnResults({ results, harvests }) {
         const harvest = harvests[i];
         if (!harvest.earnDecision) continue;
         const {reason, value} = results[i];
+        console.log(`--------------------------------------------------------------------`);
         if (value || !CONFIG.EXECUTION.ENABLED) {
             // Successfully called earn() or a test run
-            console.log(`------------------------------------------------------------`);
             console.log(`Snowglobe:   ${harvest.name} (${value?.to ?? harvest.snowglobe._address})`);
-            console.log(`Swept:       ${Util.displayBNasFloat(harvest.available, 18)} ${harvest.wantSymbol} ($${Util.displayBNasFloat(harvest.availableDAI, 18)})`);
+            console.log(`Swept:       ${Util.displayBNasFloat(harvest.available, 18, 5)} ${harvest.wantSymbol} ($${Util.displayBNasFloat(harvest.availableUSD, 18)})`);
             console.log(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
         } else {
             // Failed to execute earn()
@@ -205,6 +215,7 @@ function logEarnResults({ results, harvests }) {
             console.error(reason);
         }
     }
+    console.log(`--------------------------------------------------------------------`);
     return { results, harvests };
 }
 
@@ -215,11 +226,12 @@ async function discordHarvestUpdate({ results, harvests }) {
     for (let i = 0; i< results.length; i++) {
         const {reason, value} = results[i];
         const harvest = harvests[i];
+        if (!harvest.harvestDecision) continue;
         if (value) {
             const msg = [];
             msg.push('```');
             msg.push(`Strategy:    ${harvest.name}`);
-            msg.push(`Reinvested:  ${Util.displayBNasFloat(harvest.harvestable, 18)} PNG ($${Util.displayBNasFloat(harvest.gainDAI, 18)})`);
+            msg.push(`Reinvested:  ${Util.displayBNasFloat(harvest.harvestable, 18)} PNG ($${Util.displayBNasFloat(harvest.gainUSD, 18)})`);
             msg.push(`Transaction: ${value.transactionHash}`);
             msg.push('```');
             DiscordBot.sendMessage(msg.join("\n"), CONFIG.DISCORD.HARVESTS);
@@ -229,17 +241,18 @@ async function discordHarvestUpdate({ results, harvests }) {
 
 async function discordEarnUpdate({ results, harvests }) {
     if (!CONFIG.EXECUTION.ENABLED) return console.log(`Discord notifications are disabled while in test mode`);
-    if (!CONFIG.DISCORD.ENABLED) return console.log(`Did not notify discord. Set CONFIG.DISCORD.ENABLED to send notifications to #sweeps`);
+    if (!CONFIG.DISCORD.ENABLED) return console.log(`Did not notify discord. Set CONFIG.DISCORD.ENABLED to send notifications to #harvests`);
 
     for (let i = 0; i< results.length; i++) {
         const {reason, value} = results[i];
         const harvest = harvests[i];
+        if (!harvest.earnDecision) continue;
         if (value) {
             const msg = [];
             msg.push('```');
-            console.log(`Snowglobe:   ${harvest.name}`);
-            console.log(`Swept:       ${Util.displayBNasFloat(harvest.available, 18)} ${harvest.wantSymbol} ($${Util.displayBNasFloat(harvest.availableDAI, 18)})`);
-            console.log(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
+            msg.push(`Snowglobe:   ${harvest.name}`);
+            msg.push(`Swept:       ${Util.displayBNasFloat(harvest.available, 18, 5)} ${harvest.wantSymbol} ($${Util.displayBNasFloat(harvest.availableUSD, 18)})`);
+            msg.push(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
             msg.push('```');
             DiscordBot.sendMessage(msg.join("\n"), CONFIG.DISCORD.HARVESTS);
         }
@@ -286,61 +299,36 @@ async function initializeContracts(controllerAddresses, wantAddress) {
     throw new Error(`Could not identify a strategy & snowglobe for want address ${wantAddress}`);
 }
 
-async function getWantShareAsDAI(wantContract) {
-    const WAVAX_ADDRESS = '0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7';
-    const PNG_ADDRESS = '0x60781c2586d68229fde47564546784ab3faca982';
-
-    const token0Address = (await wantContract.methods.token0().call()).toLowerCase();
-    const token1Address = (await wantContract.methods.token1().call()).toLowerCase();
-    const { _reserve0, _reserve1 } = await wantContract.methods.getReserves().call();
+async function getPoolShareAsUSD(poolContract) {
+    const token0Address = (await poolContract.methods.token0().call()).toLowerCase();
+    const token1Address = (await poolContract.methods.token1().call()).toLowerCase();
+    const { _reserve0, _reserve1 } = await poolContract.methods.getReserves().call();
     const reserve0 = web3.utils.toBN(_reserve0);
     const reserve1 = web3.utils.toBN(_reserve1);
-    const totalSupply = web3.utils.toBN(await wantContract.methods.totalSupply().call());
+    const totalSupply = web3.utils.toBN(await poolContract.methods.totalSupply().call());
 
     if (token0Address === WAVAX_ADDRESS) {
-        const tvlDAI = await convertWAVAXToDAI(reserve0.muln(2));
-        return tvlDAI.div(totalSupply);
+        const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+        return reserve0.muln(2).mul(priceWAVAX).div(totalSupply);
     } else if (token1Address === WAVAX_ADDRESS) {
-        const tvlDAI = await convertWAVAXToDAI(reserve1.muln(2));
-        return tvlDAI.div(totalSupply);
+        const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+        return reserve1.muln(2).mul(priceWAVAX).div(totalSupply);
     } else if (token0Address === PNG_ADDRESS) {
-        const tvlDAI = await convertPNGToDAI(reserve0.muln(2));
-        return tvlDAI.div(totalSupply);
+        const pricePNG = await estimatePriceOfAsset(PNG_ADDRESS, 18);
+        return reserve0.muln(2).mul(pricePNG).div(totalSupply);
     } else if (token1Address === PNG_ADDRESS) {
-        const tvlDAI = await convertPNGToDAI(reserve1.muln(2));
-        return tvlDAI.div(totalSupply);
+        const pricePNG = await estimatePriceOfAsset(PNG_ADDRESS, 18);
+        return reserve1.muln(2).mul(pricePNG).div(totalSupply);
     } else {
-        console.error(`Could not convert want address ${wantContract._address} to USDT`);
+        console.error(`Could not convert want address ${poolContract._address} to USD`);
         return web3.utils.toBN('0');
     }
 }
 
-async function convertPNGToWavax(pngQuantity) {
+async function estimatePriceOfAsset(assetAddress, assetDecimals) {
     const PANGOLIN_ROUTER_ADDRESS = '0xe54ca86531e17ef3616d22ca28b0d458b6c89106';
-    const PNG_ADDRESS = '0x60781c2586d68229fde47564546784ab3faca982';
-    const WAVAX_ADDRESS = '0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7';
 
     const routerContract = new web3.eth.Contract(ABI.PANGOLIN_ROUTER, PANGOLIN_ROUTER_ADDRESS);
-    const [input, output] = await routerContract.methods.getAmountsOut(pngQuantity.toString(), [PNG_ADDRESS, WAVAX_ADDRESS]).call();
-    return web3.utils.toBN(output);
-}
-
-async function convertPNGToDAI(pngQuantity) {
-    const PANGOLIN_ROUTER_ADDRESS = '0xe54ca86531e17ef3616d22ca28b0d458b6c89106';
-    const PNG_ADDRESS = '0x60781c2586d68229fde47564546784ab3faca982';
-    const DAI_ADDRESS = '0xba7deebbfc5fa1100fb055a87773e1e99cd3507a';
-
-    const routerContract = new web3.eth.Contract(ABI.PANGOLIN_ROUTER, PANGOLIN_ROUTER_ADDRESS);
-    const [input, output] = await routerContract.methods.getAmountsOut(pngQuantity.toString(), [PNG_ADDRESS, DAI_ADDRESS]).call();
-    return web3.utils.toBN(output);
-}
-
-async function convertWAVAXToDAI(pngQuantity) {
-    const PANGOLIN_ROUTER_ADDRESS = '0xe54ca86531e17ef3616d22ca28b0d458b6c89106';
-    const WAVAX_ADDRESS = '0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7';
-    const DAI_ADDRESS = '0xba7deebbfc5fa1100fb055a87773e1e99cd3507a';
-
-    const routerContract = new web3.eth.Contract(ABI.PANGOLIN_ROUTER, PANGOLIN_ROUTER_ADDRESS);
-    const [input, output] = await routerContract.methods.getAmountsOut(pngQuantity.toString(), [WAVAX_ADDRESS, DAI_ADDRESS]).call();
+    const [input, output] = await routerContract.methods.getAmountsOut('1' + '0'.repeat(assetDecimals), [assetAddress, DAI_ADDRESS]).call();
     return web3.utils.toBN(output);
 }
