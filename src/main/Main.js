@@ -149,13 +149,17 @@ async function doDiscordUpdate({ results, harvests }) {
         const {reason, value} = results[i];
         const harvest = harvests[i];
         if (value) {
-            const msg = [];
-            msg.push('```');
-            msg.push(`Strategy:    ${harvest.name}`); // Excluding the strategy address for now: ${harvest.strategy._address}
-            msg.push(`Reinvested:  ${Util.displayBNasFloat(harvest.harvestable, 18).toFixed(2)} PNG ($${Util.displayBNasFloat(harvest.gainUSDT, 6).toFixed(2)})`);
-            msg.push(`Transaction: ${value.transactionHash}`);
-            msg.push('```');
-            DiscordBot.sendMessage(msg.join("\n"), CONFIG.DISCORD.CHANNEL);
+            let embedObj = {
+                Color:'0x00aaff',
+                Title:`Strategy: ${harvest.name}`,
+                Thumbnail:Util.thumbnailLink(harvest.name),
+                URL:Util.cchainTransactionLink(value.transactionHash)
+            };
+            let message = `**Reinvested:**  ${Util.displayBNasFloat(harvest.harvestable, 18).toFixed(2)} **PNG**\n`+
+                          `**Value**:  $${Util.displayBNasFloat(harvest.gainUSDT, 6).toFixed(2)}`;
+            
+            embedObj.Description = message;
+            DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
         }
     }
 }
