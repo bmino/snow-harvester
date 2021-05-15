@@ -228,22 +228,14 @@ async function discordHarvestUpdate({ results, harvests }) {
         const harvest = harvests[i];
         if (!harvest.harvestDecision) continue;
         if (value) {
-            const msg = [];
-            msg.push('```');
-            msg.push(`Strategy:    ${harvest.name}`);
-            msg.push(`Reinvested:  ${Util.displayBNasFloat(harvest.harvestable, 18)} PNG ($${Util.displayBNasFloat(harvest.gainUSD, 18)})`);
-            msg.push(`Transaction: ${value.transactionHash}`);
-            msg.push('```');
-            DiscordBot.sendMessage(msg.join("\n"), CONFIG.DISCORD.HARVESTS);
-            let embedObj = {
+            const embedObj = {
                 Color:'0x00aaff',
                 Title:`Strategy: ${harvest.name}`,
                 Thumbnail:Util.thumbnailLink(harvest.name),
-                URL:Util.cchainTransactionLink(value.transactionHash)
+                URL:Util.cchainTransactionLink(value.transactionHash),
             };
-            let message = `**Reinvested:**  ${Util.displayBNasFloat(harvest.harvestable, 18).toFixed(2)} **PNG**\n`+
-                          `**Value**:  $${Util.displayBNasFloat(harvest.gainUSDT, 6).toFixed(2)}`;
-            
+            const message = `**Reinvested:**  ${Util.displayBNasFloat(harvest.harvestable, 18, 2)} **PNG**\n`+
+                            `**Value**:  $${Util.displayBNasFloat(harvest.gainUSD, 18, 2)}}`;
             embedObj.Description = message;
             DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
         }
@@ -259,13 +251,16 @@ async function discordEarnUpdate({ results, harvests }) {
         const harvest = harvests[i];
         if (!harvest.earnDecision) continue;
         if (value) {
-            const msg = [];
-            msg.push('```');
-            msg.push(`Snowglobe:   ${harvest.name}`);
-            msg.push(`Swept:       ${Util.displayBNasFloat(harvest.available, 18, 5)} ${harvest.wantSymbol} ($${Util.displayBNasFloat(harvest.availableUSD, 18)})`);
-            msg.push(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
-            msg.push('```');
-            DiscordBot.sendMessage(msg.join("\n"), CONFIG.DISCORD.HARVESTS);
+            const embedObj = {
+                Color:'0x00aaff',
+                Title:`Snowglobe: ${harvest.name}`,
+                Thumbnail:Util.thumbnailLink(harvest.name),
+                URL:Util.cchainTransactionLink(value.transactionHash),
+            };
+            const message = `**Swept:**  ${Util.displayBNasFloat(harvest.available, 18, 5)} **${harvest.wantSymbol}**\n`+
+                            `**Value**:  $${Util.displayBNasFloat(harvest.availableUSD, 18, 2)}`;
+            embedObj.Description = message;
+            DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
         }
     }
 }
