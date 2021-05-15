@@ -1,7 +1,15 @@
+const Web3 = require('web3');
+
 const Util = {
 
-    displayBNasFloat(bigNumber, decimals) {
-        const stringNumber = bigNumber.toString();
+    BN_TEN: Web3.utils.toBN(10),
+    BN_ZERO: Web3.utils.toBN(0),
+
+    convertBNtoFloat(bigNumber, decimals) {
+        return Util.convertStringToFloat(bigNumber.toString(), decimals);
+    },
+
+    convertStringToFloat(stringNumber, decimals) {
         const isNegative = stringNumber[0] === '-';
         const unsignedString = stringNumber.replace('-', '');
         const zeroPadding = '0'.repeat(Math.max(decimals - unsignedString.length, 0));
@@ -16,6 +24,19 @@ const Util = {
             // if (unsignedString.replace(/0+$/, '').length >= 18) logger.execution.warn(`Converting ${wholePartString}.${fractionalPartString} will lose precision`);
             return parseFloat(`${wholePartString}.${fractionalPartString}`);
         }
+    },
+
+    displayBNasFloat(bigNumber, decimals, formattingDecimals = 2) {
+        const float = Util.convertBNtoFloat(bigNumber, decimals);
+        return parseFloat(float.toFixed(formattingDecimals)).toLocaleString('en-US', { maximumFractionDigits: 20 });
+    },
+
+    offset(decimals) {
+        return Web3.utils.toBN('1' + '0'.repeat(decimals));
+    },
+
+    wait(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
     },
 
     randomIntFromInterval(min, max) {
