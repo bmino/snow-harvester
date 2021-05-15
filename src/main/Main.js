@@ -235,7 +235,7 @@ async function discordHarvestUpdate({ results, harvests }) {
                 URL:Util.cchainTransactionLink(value.transactionHash),
             };
             const message = `**Reinvested:**  ${Util.displayBNasFloat(harvest.harvestable, 18, 2)} **PNG**\n`+
-                            `**Value**:  $${Util.displayBNasFloat(harvest.gainUSD, 18, 2)}}`;
+                            `**Value**:  $${Util.displayBNasFloat(harvest.gainUSD, 18, 2)}`;
             embedObj.Description = message;
             DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
         }
