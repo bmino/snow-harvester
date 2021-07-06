@@ -86,7 +86,7 @@ function addRequirements(harvests) {
 function addCalculations(harvests) {
     const addHarvestGain = async (harvest) => ({
         ...harvest,
-        gainWAVAX: harvest.harvestable.mul(harvest.pricePNG).mul(harvest.priceWAVAX).div(Util.offset(18 * 2)),
+        gainWAVAX: harvest.harvestable.mul(harvest.pricePNG).div(harvest.priceWAVAX),
         gainUSD: harvest.harvestable.mul(harvest.pricePNG).div(Util.offset(18)),
         ratio: harvest.available.muln(100).div(harvest.balance),
         availableUSD: harvest.available.mul(harvest.priceWant).div(Util.offset(harvest.wantDecimals)),
