@@ -4,9 +4,11 @@ const Web3 = require('web3');
 const web3 = new Web3(new Web3.providers.HttpProvider('https://api.avax.network/ext/bc/C/rpc'));
 const Util = require('./Util');
 const DiscordBot = require('./DiscordBot');
+const Wants = require('./Wants')
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 const WAVAX_ADDRESS = '0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7';
 const PNG_ADDRESS = '0x60781c2586d68229fde47564546784ab3faca982';
+const JOE_ADDRESS = '0x6e84a6216eA6dACC71eE8E6b0a5B7322EEbC0fDd';
 const DAI_ADDRESS = '0xba7deebbfc5fa1100fb055a87773e1e99cd3507a';
 
 // Authenticate our wallet
@@ -23,7 +25,6 @@ let executionDrift = 0;
 // Manually trigger first harvest cycle
 DiscordBot.login(CONFIG.DISCORD.TOKEN).then(harvest);
 
-
 function harvest() {
     initHarvests()
         .then(addRequirements)
@@ -37,19 +38,47 @@ function harvest() {
         .catch(handleError);
 }
 
+async function getWants() {
+    const omits = Wants.OVERRIDE_OMIT;
+    const adds = Wants.OVERRIDE_ADD;
+    const gauge_proxy = Wants.GAUGE_PROXY_CONTRACT;
+
+    const gauges = await gauge_proxy.methods.tokens().call();
+
+    console.log("gauges: ",gauges);
+
+    // remove omit overrides
+    gauges.filter(gauge => gauge in omits)
+
+    // append add overrides
+    Object.keys(adds).map((key, index) => {
+        gauges.push(key)
+    })
+
+    return gauges
+}
+
 async function initHarvests() {
     const harvests = [];
 
     const gasPrice = await web3.eth.getGasPrice();
 
-    for (const [wantAddress, friendlyName] of Object.entries(CONFIG.WANTS)) {
+    const wants = await getWants()
+
+    wants.map(wantAddress => {
         const { controller, want, snowglobe, strategy } = await initializeContracts(CONFIG.CONTROLLERS, wantAddress);
         const snowglobeSymbol = await snowglobe.methods.symbol().call();
         const wantSymbol = await want.methods.symbol().call();
         const wantDecimals = parseInt(await want.methods.decimals().call());
+        const token0_addr = await want.methods.token0.call();
+        const token1_addr = await want.methods.token1.call();
+        const token0 = new web3.eth.Contract(ABI.ERC20, token0_addr) 
+        const token1 = new web3.eth.Contract(ABI.ERC20, token1_addr)
+        const token0_name = await token0.methods.symbol().call();
+        const token1_name = await token1.methods.symbol().call();
 
         harvests.push({
-            name: friendlyName,
+            name: `${token0_name}-${token1_name}`,
             controller,
             want,
             wantSymbol,
@@ -59,23 +88,36 @@ async function initHarvests() {
             strategy,
             gasPrice,
         });
-    }
+    })
 
     return harvests;
 }
 
 function addRequirements(harvests) {
-    const addHarvestFees = async (harvest) => ({
-        ...harvest,
-        harvestable: web3.utils.toBN(await harvest.strategy.methods.getHarvestable().call()),
-        treasuryFee: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
-        treasuryMax: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
-        balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
-        available: web3.utils.toBN(await harvest.snowglobe.methods.available().call()),
-        priceWAVAX: await estimatePriceOfAsset(WAVAX_ADDRESS, 18),
-        pricePNG: await estimatePriceOfAsset(PNG_ADDRESS, 18),
-        priceWant: await getPoolShareAsUSD(harvest.want),
-    });
+    const addHarvestFees = async (harvest) => {
+        let priceLP
+        switch(harvest.wantSymbol) {
+            case("PGL"):
+                priceLP = await estimatePriceOfAsset(PNG_ADDRESS, 18)
+            case("JLP"):
+                priceLP = await estimatePriceOfAsset(JLP_ADDRESS, 18)
+            default:
+                null
+        }
+
+        return {
+            ...harvest,
+            harvestable: web3.utils.toBN(await harvest.strategy.methods.getHarvestable().call()),
+            treasuryFee: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
+            treasuryMax: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
+            balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
+            available: web3.utils.toBN(await harvest.snowglobe.methods.available().call()),
+            priceWAVAX: await estimatePriceOfAsset(WAVAX_ADDRESS, 18),
+            priceLP: priceLP,
+            priceWant: await getPoolShareAsUSD(harvest.want),
+        }
+    };
+
     return Promise.all(harvests.map(addHarvestFees))
         .catch(err => {
             console.error(`Error fetching requirements from strategy`);
@@ -86,8 +128,8 @@ function addRequirements(harvests) {
 function addCalculations(harvests) {
     const addHarvestGain = async (harvest) => ({
         ...harvest,
-        gainWAVAX: harvest.harvestable.mul(harvest.pricePNG).div(harvest.priceWAVAX),
-        gainUSD: harvest.harvestable.mul(harvest.pricePNG).div(Util.offset(18)),
+        gainWAVAX: harvest.harvestable.mul(harvest.priceLP).div(harvest.priceWAVAX),
+        gainUSD: harvest.harvestable.mul(harvest.priceLP).div(Util.offset(18)),
         ratio: harvest.available.muln(100).div(harvest.balance),
         availableUSD: harvest.available.mul(harvest.priceWant).div(Util.offset(harvest.wantDecimals)),
     });
@@ -183,10 +225,19 @@ function logHarvestingResults({ results, harvests }) {
         if (!harvest.harvestDecision) continue;
         const {reason, value} = results[i];
         console.log(`--------------------------------------------------------------------`);
+        let token
+        switch(harvest.wantSymbol) {
+            case("PGL"):
+                token = "PNG"
+            case("JLP"):
+                token = "JOE"
+            default:
+                null
+        }
         if (value || !CONFIG.EXECUTION.ENABLED) {
             // Successfully called harvest() or a test run
             console.log(`Strategy:    ${harvest.name} (${value?.to ?? harvest.strategy._address})`);
-            console.log(`Reinvested:  ${Util.displayBNasFloat(harvest.harvestable, 18)} PNG ($${Util.displayBNasFloat(harvest.gainUSD, 18)})`);
+            console.log(`Reinvested:  ${Util.displayBNasFloat(harvest.harvestable, 18)} ${token} ($${Util.displayBNasFloat(harvest.gainUSD, 18)})`);
             console.log(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
         } else {
             // Failed to execute harvest()
@@ -234,7 +285,7 @@ async function discordHarvestUpdate({ results, harvests }) {
                 Thumbnail:Util.thumbnailLink(harvest.name),
                 URL:Util.cchainTransactionLink(value.transactionHash),
             };
-            const message = `**Reinvested:**  ${Util.displayBNasFloat(harvest.harvestable, 18, 2)} **PNG**\n`+
+            const message = `**Reinvested:**  ${Util.displayBNasFloat(harvest.harvestable, 18, 2)} **${harvest.symbol}**\n`+
                             `**Value**:  $${Util.displayBNasFloat(harvest.gainUSD, 18, 2)}`;
             embedObj.Description = message;
             DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
@@ -325,6 +376,12 @@ async function getPoolShareAsUSD(poolContract) {
     } else if (token1Address === PNG_ADDRESS) {
         const pricePNG = await estimatePriceOfAsset(PNG_ADDRESS, 18);
         return reserve1.muln(2).mul(pricePNG).div(totalSupply);
+    } else if (token0Address === JOE_ADDRESS) {
+        const priceJOE = await estimatePriceOfAsset(JOE_ADDRESS, 18);
+        return reserve0.muln(2).mul(priceJOE).div(totalSupply);
+    } else if (token1Address === JOE_ADDRESS) {
+        const priceJOE = await estimatePriceOfAsset(JOE_ADDRESS, 18);
+        return reserve1.muln(2).mul(priceJOE).div(totalSupply);
     } else {
         console.error(`Could not convert want address ${poolContract._address} to USD`);
         return web3.utils.toBN('0');
