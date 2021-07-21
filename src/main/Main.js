@@ -43,19 +43,19 @@ async function getWants() {
     const adds = Wants.OVERRIDE_ADD;
     const gauge_proxy = Wants.GAUGE_PROXY_CONTRACT;
 
-    const gauges = await gauge_proxy.methods.tokens().call();
+    const wants = await gauge_proxy.methods.tokens().call();
 
-    console.log("gauges: ",gauges);
+    console.log("wants: ",wants);
 
     // remove omit overrides
-    gauges.filter(gauge => gauge in omits)
+    wants.filter(gauge => gauge in omits)
 
     // append add overrides
     Object.keys(adds).map((key, index) => {
-        gauges.push(key)
+        wants.push(key)
     })
 
-    return gauges
+    return wants
 }
 
 async function initHarvests() {
