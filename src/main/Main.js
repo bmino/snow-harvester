@@ -95,12 +95,12 @@ async function initHarvests() {
 
 function addRequirements(harvests) {
     const addHarvestFees = async (harvest) => {
-        let priceLP
+        let rewardPrice
         switch(harvest.wantSymbol) {
             case("PGL"):
-                priceLP = await estimatePriceOfAsset(PNG_ADDRESS, 18)
+                rewardPrice = await estimatePriceOfAsset(PNG_ADDRESS, 18)
             case("JLP"):
-                priceLP = await estimatePriceOfAsset(JLP_ADDRESS, 18)
+                rewardPrice = await estimatePriceOfAsset(JLP_ADDRESS, 18)
             default:
                 null
         }
@@ -113,7 +113,7 @@ function addRequirements(harvests) {
             balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
             available: web3.utils.toBN(await harvest.snowglobe.methods.available().call()),
             priceWAVAX: await estimatePriceOfAsset(WAVAX_ADDRESS, 18),
-            priceLP: priceLP,
+            rewardPrice: rewardPrice,
             priceWant: await getPoolShareAsUSD(harvest.want),
         }
     };
@@ -128,8 +128,8 @@ function addRequirements(harvests) {
 function addCalculations(harvests) {
     const addHarvestGain = async (harvest) => ({
         ...harvest,
-        gainWAVAX: harvest.harvestable.mul(harvest.priceLP).div(harvest.priceWAVAX),
-        gainUSD: harvest.harvestable.mul(harvest.priceLP).div(Util.offset(18)),
+        gainWAVAX: harvest.harvestable.mul(harvest.rewardPrice).div(harvest.priceWAVAX),
+        gainUSD: harvest.harvestable.mul(harvest.rewardPrice).div(Util.offset(18)),
         ratio: harvest.available.muln(100).div(harvest.balance),
         availableUSD: harvest.available.mul(harvest.priceWant).div(Util.offset(harvest.wantDecimals)),
     });
