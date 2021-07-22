@@ -45,25 +45,25 @@ function harvest() {
         .catch(handleError);
 }
 
-async function getWants() {
+async function getPools() {
     const omits = Wants.OVERRIDE_OMIT;
     const adds = Wants.OVERRIDE_ADD;
 
     const gauge_proxy = new web3.eth.Contract(ABI.GAUGE_PROXY, Wants.GAUGE_PROXY_ADDRESS);
 
-    const wants = await gauge_proxy.methods.tokens().call();
+    const pools = await gauge_proxy.methods.tokens().call();
 
-    console.log("wants: ",wants);
+    console.log("pools: ",pools);
 
     // remove omit overrides
-    wants.filter(gauge => gauge in omits)
+    pools.filter(pool => pool in omits)
 
     // append add overrides
     Object.keys(adds).map((key, index) => {
-        wants.push(key)
+        pools.push(key)
     })
 
-    return wants
+    return pools
 }
 
 async function initHarvests() {
@@ -71,10 +71,10 @@ async function initHarvests() {
 
     const gasPrice = await web3.eth.getGasPrice();
 
-    const wants = await getWants()
+    const pools = await getPools()
 
-    wants.map( async wantAddress => {
-        const { controller, want, snowglobe, strategy } = await initializeContracts(CONFIG.CONTROLLERS, wantAddress);
+    pools.map( async poolAddress => {
+        const { controller, want, snowglobe, strategy } = await initializeContracts(CONFIG.CONTROLLERS, poolAddress);
         const snowglobeSymbol = await snowglobe.methods.symbol().call();
         const wantSymbol = await want.methods.symbol().call();
         const wantDecimals = parseInt(await want.methods.decimals().call());
@@ -193,7 +193,6 @@ function addDecisions(harvests) {
     return harvests.map(addHarvestDecision);
 }
 
-
 async function doHarvesting(harvests) {
     let nonce = await web3.eth.getTransactionCount(CONFIG.WALLET.ADDRESS);
     const executeHarvestTx = async (harvest) => {
@@ -225,7 +224,6 @@ async function doEarning(harvests) {
     await discordEarnUpdate({ results, harvests });
     return harvests;
 }
-
 
 function logHarvestingResults({ results, harvests }) {
     for (let i = 0; i < results.length; i++) {
