@@ -282,46 +282,46 @@ async function discordHarvestUpdate({ results, harvests }) {
     if (!CONFIG.EXECUTION.ENABLED) return console.log(`Discord notifications are disabled while in test mode`);
     if (!CONFIG.DISCORD.ENABLED) return console.log(`Did not notify discord. Set CONFIG.DISCORD.ENABLED to send notifications to #harvests`);
 
-    // for (let i = 0; i< results.length; i++) {
-    //     const {reason, value} = results[i];
-    //     const harvest = harvests[i];
-    //     if (!harvest.harvestDecision) continue;
-    //     if (value) {
-    //         const embedObj = {
-    //             Color:'0x00aaff',
-    //             Title:`Strategy: ${harvest.name}`,
-    //             Thumbnail:Util.thumbnailLink(harvest.name),
-    //             URL:Util.cchainTransactionLink(value.transactionHash),
-    //         };
-    //         const message = `**Reinvested:**  ${Util.displayBNasFloat(harvest.harvestable, 18, 2)} **${harvest.symbol}**\n`+
-    //                         `**Value**:  $${Util.displayBNasFloat(harvest.gainUSD, 18, 2)}`;
-    //         embedObj.Description = message;
-    //         DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
-    //     }
-    // }
+    for (let i = 0; i< results.length; i++) {
+        const {reason, value} = results[i];
+        const harvest = harvests[i];
+        if (!harvest.harvestDecision) continue;
+        if (value) {
+            const embedObj = {
+                Color:'0x00aaff',
+                Title:`Strategy: ${harvest.name}`,
+                Thumbnail:Util.thumbnailLink(harvest.name),
+                URL:Util.cchainTransactionLink(value.transactionHash),
+            };
+            const message = `**Reinvested:**  ${Util.displayBNasFloat(harvest.harvestable, 18, 2)} **${harvest.symbol}**\n`+
+                            `**Value**:  $${Util.displayBNasFloat(harvest.gainUSD, 18, 2)}`;
+            embedObj.Description = message;
+            DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
+        }
+    }
 }
 
 async function discordEarnUpdate({ results, harvests }) {
     if (!CONFIG.EXECUTION.ENABLED) return console.log(`Discord notifications are disabled while in test mode`);
     if (!CONFIG.DISCORD.ENABLED) return console.log(`Did not notify discord. Set CONFIG.DISCORD.ENABLED to send notifications to #harvests`);
 
-    // for (let i = 0; i< results.length; i++) {
-    //     const {reason, value} = results[i];
-    //     const harvest = harvests[i];
-    //     if (!harvest.earnDecision) continue;
-    //     if (value) {
-    //         const embedObj = {
-    //             Color:'0x00aaff',
-    //             Title:`Snowglobe: ${harvest.name}`,
-    //             Thumbnail:Util.thumbnailLink(harvest.name),
-    //             URL:Util.cchainTransactionLink(value.transactionHash),
-    //         };
-    //         const message = `**Swept:**  ${Util.displayBNasFloat(harvest.available, 18, 5)} **${harvest.wantSymbol}**\n`+
-    //                         `**Value**:  $${Util.displayBNasFloat(harvest.availableUSD, 18, 2)}`;
-    //         embedObj.Description = message;
-    //         DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
-    //     }
-    // }
+    for (let i = 0; i< results.length; i++) {
+        const {reason, value} = results[i];
+        const harvest = harvests[i];
+        if (!harvest.earnDecision) continue;
+        if (value) {
+            const embedObj = {
+                Color:'0x00aaff',
+                Title:`Snowglobe: ${harvest.name}`,
+                Thumbnail:Util.thumbnailLink(harvest.name),
+                URL:Util.cchainTransactionLink(value.transactionHash),
+            };
+            const message = `**Swept:**  ${Util.displayBNasFloat(harvest.available, 18, 5)} **${harvest.wantSymbol}**\n`+
+                            `**Value**:  $${Util.displayBNasFloat(harvest.availableUSD, 18, 2)}`;
+            embedObj.Description = message;
+            DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
+        }
+    }
 }
 
 function handleError(err) {
