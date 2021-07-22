@@ -4,7 +4,8 @@ const Web3 = require('web3');
 const web3 = new Web3(new Web3.providers.HttpProvider('https://api.avax.network/ext/bc/C/rpc'));
 const Util = require('./Util');
 const DiscordBot = require('./DiscordBot');
-const Wants = require('./Wants')
+const Wants = require('./Wants');
+const Config = require('../../config/Config');
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 const WAVAX_ADDRESS = '0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7';
 const PNG_ADDRESS = '0x60781c2586d68229fde47564546784ab3faca982';
@@ -23,7 +24,13 @@ let executionWindowCenter = Date.now();
 let executionDrift = 0;
 
 // Manually trigger first harvest cycle
-DiscordBot.login(CONFIG.DISCORD.TOKEN).then(harvest);
+if (Config.DISCORD.ENABLED){
+    DiscordBot.login(CONFIG.DISCORD.TOKEN).then(harvest);
+}
+else {
+    harvest()
+}
+
 
 function harvest() {
     initHarvests()
@@ -41,7 +48,8 @@ function harvest() {
 async function getWants() {
     const omits = Wants.OVERRIDE_OMIT;
     const adds = Wants.OVERRIDE_ADD;
-    const gauge_proxy = Wants.GAUGE_PROXY_CONTRACT;
+
+    const gauge_proxy = new web3.eth.Contract(ABI.GAUGE_PROXY, Wants.GAUGE_PROXY_ADDRESS);
 
     const wants = await gauge_proxy.methods.tokens().call();
 
@@ -65,7 +73,7 @@ async function initHarvests() {
 
     const wants = await getWants()
 
-    wants.map(wantAddress => {
+    wants.map( async wantAddress => {
         const { controller, want, snowglobe, strategy } = await initializeContracts(CONFIG.CONTROLLERS, wantAddress);
         const snowglobeSymbol = await snowglobe.methods.symbol().call();
         const wantSymbol = await want.methods.symbol().call();
@@ -274,46 +282,46 @@ async function discordHarvestUpdate({ results, harvests }) {
     if (!CONFIG.EXECUTION.ENABLED) return console.log(`Discord notifications are disabled while in test mode`);
     if (!CONFIG.DISCORD.ENABLED) return console.log(`Did not notify discord. Set CONFIG.DISCORD.ENABLED to send notifications to #harvests`);
 
-    for (let i = 0; i< results.length; i++) {
-        const {reason, value} = results[i];
-        const harvest = harvests[i];
-        if (!harvest.harvestDecision) continue;
-        if (value) {
-            const embedObj = {
-                Color:'0x00aaff',
-                Title:`Strategy: ${harvest.name}`,
-                Thumbnail:Util.thumbnailLink(harvest.name),
-                URL:Util.cchainTransactionLink(value.transactionHash),
-            };
-            const message = `**Reinvested:**  ${Util.displayBNasFloat(harvest.harvestable, 18, 2)} **${harvest.symbol}**\n`+
-                            `**Value**:  $${Util.displayBNasFloat(harvest.gainUSD, 18, 2)}`;
-            embedObj.Description = message;
-            DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
-        }
-    }
+    // for (let i = 0; i< results.length; i++) {
+    //     const {reason, value} = results[i];
+    //     const harvest = harvests[i];
+    //     if (!harvest.harvestDecision) continue;
+    //     if (value) {
+    //         const embedObj = {
+    //             Color:'0x00aaff',
+    //             Title:`Strategy: ${harvest.name}`,
+    //             Thumbnail:Util.thumbnailLink(harvest.name),
+    //             URL:Util.cchainTransactionLink(value.transactionHash),
+    //         };
+    //         const message = `**Reinvested:**  ${Util.displayBNasFloat(harvest.harvestable, 18, 2)} **${harvest.symbol}**\n`+
+    //                         `**Value**:  $${Util.displayBNasFloat(harvest.gainUSD, 18, 2)}`;
+    //         embedObj.Description = message;
+    //         DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
+    //     }
+    // }
 }
 
 async function discordEarnUpdate({ results, harvests }) {
     if (!CONFIG.EXECUTION.ENABLED) return console.log(`Discord notifications are disabled while in test mode`);
     if (!CONFIG.DISCORD.ENABLED) return console.log(`Did not notify discord. Set CONFIG.DISCORD.ENABLED to send notifications to #harvests`);
 
-    for (let i = 0; i< results.length; i++) {
-        const {reason, value} = results[i];
-        const harvest = harvests[i];
-        if (!harvest.earnDecision) continue;
-        if (value) {
-            const embedObj = {
-                Color:'0x00aaff',
-                Title:`Snowglobe: ${harvest.name}`,
-                Thumbnail:Util.thumbnailLink(harvest.name),
-                URL:Util.cchainTransactionLink(value.transactionHash),
-            };
-            const message = `**Swept:**  ${Util.displayBNasFloat(harvest.available, 18, 5)} **${harvest.wantSymbol}**\n`+
-                            `**Value**:  $${Util.displayBNasFloat(harvest.availableUSD, 18, 2)}`;
-            embedObj.Description = message;
-            DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
-        }
-    }
+    // for (let i = 0; i< results.length; i++) {
+    //     const {reason, value} = results[i];
+    //     const harvest = harvests[i];
+    //     if (!harvest.earnDecision) continue;
+    //     if (value) {
+    //         const embedObj = {
+    //             Color:'0x00aaff',
+    //             Title:`Snowglobe: ${harvest.name}`,
+    //             Thumbnail:Util.thumbnailLink(harvest.name),
+    //             URL:Util.cchainTransactionLink(value.transactionHash),
+    //         };
+    //         const message = `**Swept:**  ${Util.displayBNasFloat(harvest.available, 18, 5)} **${harvest.wantSymbol}**\n`+
+    //                         `**Value**:  $${Util.displayBNasFloat(harvest.availableUSD, 18, 2)}`;
+    //         embedObj.Description = message;
+    //         DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
+    //     }
+    // }
 }
 
 function handleError(err) {
@@ -336,14 +344,17 @@ function scheduleNextHarvest() {
 
 ///// Helper functions
 
-async function initializeContracts(controllerAddresses, wantAddress) {
-    if (!web3.utils.isAddress(wantAddress)) throw new Error(`Invalid want address ${wantAddress}`);
+async function initializeContracts(controllerAddresses, snowglobeAddress) {
+    if (!web3.utils.isAddress(snowglobeAddress)) throw new Error(`Invalid snowGlobe address ${snowglobeAddress}`);
+    let wantAddress
 
     for (const controllerAddress of controllerAddresses) {
         if (!web3.utils.isAddress(controllerAddress)) throw new Error(`Invalid controller address ${controllerAddress}`);
 
         const controller = new web3.eth.Contract(ABI.CONTROLLER, controllerAddress);
-        const snowglobeAddress = await controller.methods.globes(wantAddress).call();
+        const snowglobe = new web3.eth.Contract(ABI.SNOWGLOBE, snowglobeAddress);
+        wantAddress = await snowglobe.methods.token().call();
+        snowglobeAddress = await controller.methods.globes(wantAddress).call();
         const strategyAddress = await controller.methods.strategies(wantAddress).call();
 
         if (strategyAddress !== ZERO_ADDRESS && snowglobeAddress !== ZERO_ADDRESS) return {
