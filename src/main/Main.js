@@ -140,7 +140,7 @@ function addRequirements(harvests) {
             ...harvest,
             harvestable: web3.utils.toBN(await harvest.strategy.methods.getHarvestable().call()),
             treasuryFee: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
-            treasuryMax: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
+            treasuryMax: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryMax().call()),
             balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
             available: web3.utils.toBN(await harvest.snowglobe.methods.available().call()),
             priceWAVAX: await estimatePriceOfAsset(WAVAX_ADDRESS, 18),
