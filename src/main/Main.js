@@ -4,13 +4,14 @@ const Web3 = require('web3');
 const web3 = new Web3(new Web3.providers.HttpProvider('https://api.avax.network/ext/bc/C/rpc'));
 const Util = require('./Util');
 const DiscordBot = require('./DiscordBot');
-const Wants = require('./Wants');
-const Config = require('../../config/Config');
-const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
-const WAVAX_ADDRESS = '0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7';
-const PNG_ADDRESS = '0x60781c2586d68229fde47564546784ab3faca982';
-const JOE_ADDRESS = '0x6e84a6216eA6dACC71eE8E6b0a5B7322EEbC0fDd';
-const DAI_ADDRESS = '0xba7deebbfc5fa1100fb055a87773e1e99cd3507a';
+const WANTS = require('../../config/Wants');
+const VALUATION = require('../../config/Valuation');
+const {
+    ZERO_ADDRESS,
+    WAVAX_ADDRESS,
+    PNG_ADDRESS,
+    JOE_ADDRESS,
+} = require('../../config/Constants');
 
 // Authenticate our wallet
 if (CONFIG.EXECUTION.ENABLED) {
@@ -24,11 +25,10 @@ let executionWindowCenter = Date.now();
 let executionDrift = 0;
 
 // Manually trigger first harvest cycle
-if (Config.DISCORD.ENABLED){
-    DiscordBot.login(CONFIG.DISCORD.TOKEN).then(harvest);
-}
-else {
-    harvest()
+if (CONFIG.DISCORD.ENABLED){
+    DiscordBot.login(CONFIG.DISCORD.ERC20).then(harvest);
+} else {
+    harvest();
 }
 
 
@@ -45,37 +45,32 @@ function harvest() {
         .catch(handleError);
 }
 
-async function getPools() {
-    const omits = Wants.OVERRIDE_OMIT;
-    const adds = Wants.OVERRIDE_ADD;
-
-    const gauge_proxy = new web3.eth.Contract(ABI.GAUGE_PROXY, Wants.GAUGE_PROXY_ADDRESS);
+async function getSnowglobes() {
+    const gauge_proxy = new web3.eth.Contract(ABI.GAUGE_PROXY, WANTS.GAUGE_PROXY_ADDRESS);
 
     let pools = await gauge_proxy.methods.tokens().call();
 
-    console.log("pools: ",pools);
+    // Ensure address formatting is compatible across the harvester
+    pools = pools.map(address => address.toLowerCase());
 
-    // remove omit overrides
-    pools = pools.filter(pool => !omits.includes(pool))
+    console.log("pools:", pools);
 
-    // append add overrides
-    pools = [
-        ...pools, 
-        ...adds
-    ]
+    return = [
+        // remove omitted overrides
+        ...pools.filter(snowglobe => !WANTS.OVERRIDE_OMIT.includes(snowglobe)),
 
-    return pools
+        // append add overrides
+        ...WANTS.OVERRIDE_ADD,
+    ];
 }
 
 async function initHarvests() {
-    const harvests = [];
-
     const gasPrice = await web3.eth.getGasPrice();
 
-    const pools = await getPools()
+    const snowglobes = await getSnowglobes();
 
-    pools.map( async poolAddress => {
-        const { controller, want, snowglobe, strategy } = await initializeContracts(CONFIG.CONTROLLERS, poolAddress);
+    return Promise.all(snowglobes.map(async snowglobeAddress => {
+        const { controller, want, snowglobe, strategy } = await initializeContracts(CONFIG.CONTROLLERS, snowglobeAddress);
         const snowglobeSymbol = await snowglobe.methods.symbol().call();
         const wantSymbol = await want.methods.symbol().call();
         const wantDecimals = parseInt(await want.methods.decimals().call());
@@ -86,7 +81,7 @@ async function initHarvests() {
         const token0_name = await token0.methods.symbol().call();
         const token1_name = await token1.methods.symbol().call();
 
-        harvests.push({
+        return {
             name: `${token0_name}-${token1_name}`,
             controller,
             want,
@@ -96,35 +91,38 @@ async function initHarvests() {
             snowglobeSymbol,
             strategy,
             gasPrice,
-        });
-    })
-
-    return harvests;
+        };
+    }));
 }
 
-function addRequirements(harvests) {
+async function addRequirements(harvests) {
+    const priceMap = {
+        'WAVAX': await estimatePriceOfAsset(WAVAX_ADDRESS, 18),
+        'PGL': await estimatePriceOfAsset(PNG_ADDRESS, 18),
+        'JLP': await estimatePriceOfAsset(JOE_ADDRESS, 18),
+    };
+
     const addHarvestFees = async (harvest) => {
-        let rewardPrice
-        switch(harvest.wantSymbol) {
-            case("PGL"):
-                rewardPrice = await estimatePriceOfAssetPNG(PNG_ADDRESS, 18)
-                break
-            case("JLP"):
-                rewardPrice = await estimatePriceOfAssetJOE(JOE_ADDRESS, 18)
-                break
-            default:
-                null
+        if (!priceMap[harvest.wantSymbol]) throw new Error(`Unknown symbol: ${harvest.wantSymbol}`);
+
+        let harvestable;
+        try {
+            harvestable = web3.utils.toBN(await harvest.strategy.methods.getHarvestable().call());
+        } catch(err) {
+            // This fails for certain strategies ex. strategy 0x868d0F1985e7e5585747bd6E9B111D031B71F960
+            // Assuming the harvest should happen
+            harvestable = web3.utils.toBN('0xffffffffffffffffff');
         }
 
         return {
             ...harvest,
-            harvestable: web3.utils.toBN(await harvest.strategy.methods.getHarvestable().call()),
+            harvestable,
             treasuryFee: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
-            treasuryMax: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
+            treasuryMax: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryMax().call()),
             balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
             available: web3.utils.toBN(await harvest.snowglobe.methods.available().call()),
-            priceWAVAX: await estimatePriceOfAssetPNG(WAVAX_ADDRESS, 18),
-            rewardPrice: rewardPrice,
+            priceWAVAX: priceMap['WAVAX'],
+            rewardPrice: priceMap[harvest.wantSymbol],
             priceWant: await getPoolShareAsUSD(harvest.want),
         }
     };
@@ -237,11 +235,13 @@ function logHarvestingResults({ results, harvests }) {
         let token
         switch(harvest.wantSymbol) {
             case("PGL"):
-                token = "PNG"
+                token = "PNG";
+                break;
             case("JLP"):
-                token = "JOE"
+                token = "JOE";
+                break;
             default:
-                null
+                throw new Error(`Unknown symbol: ${harvest.wantSymbol}`);
         }
         if (value || !CONFIG.EXECUTION.ENABLED) {
             // Successfully called harvest() or a test run
@@ -347,25 +347,24 @@ function scheduleNextHarvest() {
 
 async function initializeContracts(controllerAddresses, snowglobeAddress) {
     if (!web3.utils.isAddress(snowglobeAddress)) throw new Error(`Invalid snowGlobe address ${snowglobeAddress}`);
-    let wantAddress
 
     for (const controllerAddress of controllerAddresses) {
         if (!web3.utils.isAddress(controllerAddress)) throw new Error(`Invalid controller address ${controllerAddress}`);
 
         const controller = new web3.eth.Contract(ABI.CONTROLLER, controllerAddress);
         const snowglobe = new web3.eth.Contract(ABI.SNOWGLOBE, snowglobeAddress);
-        wantAddress = await snowglobe.methods.token().call();
-        snowglobeAddress = await controller.methods.globes(wantAddress).call();
+        const wantAddress = await snowglobe.methods.token().call();
         const strategyAddress = await controller.methods.strategies(wantAddress).call();
+        const controllerSnowglobeAddress = await controller.methods.globes(wantAddress).call();
 
-        if (strategyAddress !== ZERO_ADDRESS && snowglobeAddress !== ZERO_ADDRESS) return {
+        if (strategyAddress !== ZERO_ADDRESS && controllerSnowglobeAddress === snowglobeAddress) return {
             controller,
-            want: new web3.eth.Contract(ABI.POOL, wantAddress),
-            snowglobe: new web3.eth.Contract(ABI.SNOWGLOBE, snowglobeAddress),
+            snowglobe,
+            want: new web3.eth.Contract(ABI.UNI_V2_POOL, wantAddress),
             strategy: new web3.eth.Contract(ABI.STRATEGY, strategyAddress),
         };
     }
-    throw new Error(`Could not identify a strategy & snowglobe for want address ${wantAddress}`);
+    throw new Error(`Could not identify contracts for snowglobe ${snowglobeAddress}`);
 }
 
 async function getPoolShareAsUSD(poolContract) {
@@ -400,24 +399,15 @@ async function getPoolShareAsUSD(poolContract) {
     }
 }
 
-async function estimatePriceOfAssetPNG(assetAddress, assetDecimals) {
-    const PANGOLIN_ROUTER_ADDRESS = '0xe54ca86531e17ef3616d22ca28b0d458b6c89106';
+async function estimatePriceOfAsset(assetAddress, assetDecimals) {
+    const { ROUTER, ROUTE } = VALUATION[assetAddress];
+    const destination = ROUTE[ROUTE.length - 1];
 
-    const routerContract = new web3.eth.Contract(ABI.ROUTER, PANGOLIN_ROUTER_ADDRESS);
-    const [, output] = await routerContract.methods.getAmountsOut('1' + '0'.repeat(assetDecimals), [assetAddress, DAI_ADDRESS]).call();
-    return web3.utils.toBN(output);
-}
+    const destinationContract = new web3.eth.Contract(ABI.ERC20, destination);
+    const destinationDecimals = parseInt(await destinationContract.methods.decimals().call());
+    const correction = web3.utils.toBN(destinationDecimals - assetDecimals);
 
-async function estimatePriceOfAssetJOE(assetAddress, assetDecimals) {
-    const JOE_ROUTER_ADDRESS = '0x60aE616a2155Ee3d9A68541Ba4544862310933d4';
-
-    
-    const PANGOLIN_ROUTER_ADDRESS = '0xe54ca86531e17ef3616d22ca28b0d458b6c89106';
-
-    const pngRouterContract = new web3.eth.Contract(ABI.ROUTER, PANGOLIN_ROUTER_ADDRESS);
-    const [, priceWAVAX] = await pngRouterContract.methods.getAmountsOut('1' + '0'.repeat(assetDecimals), [WAVAX_ADDRESS, DAI_ADDRESS]).call();
-
-    const joeRouterContract = new web3.eth.Contract(ABI.ROUTER, JOE_ROUTER_ADDRESS);
-    const [, output] = await joeRouterContract.methods.getAmountsOut('1' + '0'.repeat(assetDecimals), [assetAddress, WAVAX_ADDRESS]).call();
-    return web3.utils.toBN(output*priceWAVAX);
+    const routerContract = new web3.eth.Contract(ABI.UNI_V2_ROUTER, ROUTER);
+    const [input, output] = await routerContract.methods.getAmountsOut('1' + '0'.repeat(assetDecimals), ROUTE).call();
+    return web3.utils.toBN(output).mul(web3.utils.toBN(10).pow(correction));
 }
