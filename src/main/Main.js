@@ -5,11 +5,13 @@ const web3 = new Web3(new Web3.providers.HttpProvider('https://api.avax.network/
 const Util = require('./Util');
 const DiscordBot = require('./DiscordBot');
 const WANTS = require('../../config/Wants');
-const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
-const WAVAX_ADDRESS = '0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7';
-const PNG_ADDRESS = '0x60781c2586d68229fde47564546784ab3faca982';
-const JOE_ADDRESS = '0x6e84a6216eA6dACC71eE8E6b0a5B7322EEbC0fDd';
-const DAI_ADDRESS = '0xba7deebbfc5fa1100fb055a87773e1e99cd3507a';
+const VALUATION = require('../../config/Valuation');
+const {
+    ZERO_ADDRESS,
+    WAVAX_ADDRESS,
+    PNG_ADDRESS,
+    JOE_ADDRESS,
+} = require('../../config/Constants');
 
 // Authenticate our wallet
 if (CONFIG.EXECUTION.ENABLED) {
@@ -122,29 +124,25 @@ async function initHarvests() {
     }));
 }
 
-function addRequirements(harvests) {
+async function addRequirements(harvests) {
+    const priceMap = {
+        'WAVAX': await estimatePriceOfAsset(WAVAX_ADDRESS, 18),
+        'PGL': await estimatePriceOfAsset(PNG_ADDRESS, 18),
+        'JLP': await estimatePriceOfAsset(JOE_ADDRESS, 18),
+    };
+
     const addHarvestFees = async (harvest) => {
-        let rewardPrice
-        switch(harvest.wantSymbol) {
-            case("PGL"):
-                rewardPrice = await estimatePriceOfAsset(PNG_ADDRESS, 18);
-                break;
-            case("JLP"):
-                rewardPrice = await estimatePriceOfAsset(JOE_ADDRESS, 18);
-                break;
-            default:
-                throw new Error(`Unknown symbol: ${harvest.wantSymbol}`);
-        }
+        if (!priceMap[harvest.wantSymbol]) throw new Error(`Unknown symbol: ${harvest.wantSymbol}`);
 
         return {
             ...harvest,
-            harvestable: web3.utils.toBN(await harvest.strategy.methods.getHarvestable().call()),
+            harvestable: web3.utils.toBN(await harvest.strategy.methods.getHarvestable().call()), // This fails for ex. strategy 0x868d0F1985e7e5585747bd6E9B111D031B71F960
             treasuryFee: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
             treasuryMax: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryMax().call()),
-            balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
+            // balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
             available: web3.utils.toBN(await harvest.snowglobe.methods.available().call()),
-            priceWAVAX: await estimatePriceOfAsset(WAVAX_ADDRESS, 18),
-            rewardPrice: rewardPrice,
+            priceWAVAX: priceMap['WAVAX'],
+            rewardPrice: priceMap[harvest.wantSymbol],
             priceWant: await getPoolShareAsUSD(harvest.want),
         }
     };
@@ -257,11 +255,13 @@ function logHarvestingResults({ results, harvests }) {
         let token
         switch(harvest.wantSymbol) {
             case("PGL"):
-                token = "PNG"
+                token = "PNG";
+                break;
             case("JLP"):
-                token = "JOE"
+                token = "JOE";
+                break;
             default:
-                null
+                throw new Error(`Unknown symbol: ${harvest.wantSymbol}`);
         }
         if (value || !CONFIG.EXECUTION.ENABLED) {
             // Successfully called harvest() or a test run
@@ -379,7 +379,7 @@ async function initializeContracts(controllerAddresses, snowglobeAddress) {
         if (strategyAddress !== ZERO_ADDRESS && !!snowglobe) return {
             controller,
             snowglobe,
-            want: new web3.eth.Contract(ABI.PANGOLIN_POOL, wantAddress),
+            want: new web3.eth.Contract(ABI.UNI_V2_POOL, wantAddress),
             strategy: new web3.eth.Contract(ABI.STRATEGY, strategyAddress),
         };
     }
@@ -419,9 +419,14 @@ async function getPoolShareAsUSD(poolContract) {
 }
 
 async function estimatePriceOfAsset(assetAddress, assetDecimals) {
-    const PANGOLIN_ROUTER_ADDRESS = '0xe54ca86531e17ef3616d22ca28b0d458b6c89106';
+    const { ROUTER, ROUTE } = VALUATION[assetAddress];
+    const destination = ROUTE[ROUTE.length - 1];
 
-    const routerContract = new web3.eth.Contract(ABI.PANGOLIN_ROUTER, PANGOLIN_ROUTER_ADDRESS);
-    const [input, output] = await routerContract.methods.getAmountsOut('1' + '0'.repeat(assetDecimals), [assetAddress, DAI_ADDRESS]).call();
-    return web3.utils.toBN(output);
+    const destinationContract = new web3.eth.Contract(ABI.TOKEN, destination);
+    const destinationDecimals = parseInt(await destinationContract.methods.decimals().call());
+    const correction = web3.utils.toBN(destinationDecimals - assetDecimals);
+
+    const routerContract = new web3.eth.Contract(ABI.UNI_V2_ROUTER, ROUTER);
+    const [input, output] = await routerContract.methods.getAmountsOut('1' + '0'.repeat(assetDecimals), ROUTE).call();
+    return web3.utils.toBN(output).mul(web3.utils.toBN(10).pow(correction));
 }
