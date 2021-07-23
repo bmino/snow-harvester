@@ -51,17 +51,18 @@ async function getPools() {
 
     const gauge_proxy = new web3.eth.Contract(ABI.GAUGE_PROXY, Wants.GAUGE_PROXY_ADDRESS);
 
-    const pools = await gauge_proxy.methods.tokens().call();
+    let pools = await gauge_proxy.methods.tokens().call();
 
     console.log("pools: ",pools);
 
     // remove omit overrides
-    pools.filter(pool => pool in omits)
+    pools = pools.filter(pool => !omits.includes(pool))
 
     // append add overrides
-    Object.keys(adds).map((key, index) => {
-        pools.push(key)
-    })
+    pools = [
+        ...pools, 
+        ...adds
+    ]
 
     return pools
 }
@@ -78,8 +79,8 @@ async function initHarvests() {
         const snowglobeSymbol = await snowglobe.methods.symbol().call();
         const wantSymbol = await want.methods.symbol().call();
         const wantDecimals = parseInt(await want.methods.decimals().call());
-        const token0_addr = await want.methods.token0.call();
-        const token1_addr = await want.methods.token1.call();
+        const token0_addr = await want.methods.token0().call();
+        const token1_addr = await want.methods.token1().call();
         const token0 = new web3.eth.Contract(ABI.ERC20, token0_addr) 
         const token1 = new web3.eth.Contract(ABI.ERC20, token1_addr)
         const token0_name = await token0.methods.symbol().call();
@@ -106,9 +107,11 @@ function addRequirements(harvests) {
         let rewardPrice
         switch(harvest.wantSymbol) {
             case("PGL"):
-                rewardPrice = await estimatePriceOfAsset(PNG_ADDRESS, 18)
+                rewardPrice = await estimatePriceOfAssetPNG(PNG_ADDRESS, 18)
+                break
             case("JLP"):
-                rewardPrice = await estimatePriceOfAsset(JLP_ADDRESS, 18)
+                rewardPrice = await estimatePriceOfAssetJOE(JOE_ADDRESS, 18)
+                break
             default:
                 null
         }
@@ -120,7 +123,7 @@ function addRequirements(harvests) {
             treasuryMax: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
             balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
             available: web3.utils.toBN(await harvest.snowglobe.methods.available().call()),
-            priceWAVAX: await estimatePriceOfAsset(WAVAX_ADDRESS, 18),
+            priceWAVAX: await estimatePriceOfAssetPNG(WAVAX_ADDRESS, 18),
             rewardPrice: rewardPrice,
             priceWant: await getPoolShareAsUSD(harvest.want),
         }
@@ -357,7 +360,7 @@ async function initializeContracts(controllerAddresses, snowglobeAddress) {
 
         if (strategyAddress !== ZERO_ADDRESS && snowglobeAddress !== ZERO_ADDRESS) return {
             controller,
-            want: new web3.eth.Contract(ABI.PANGOLIN_POOL, wantAddress),
+            want: new web3.eth.Contract(ABI.POOL, wantAddress),
             snowglobe: new web3.eth.Contract(ABI.SNOWGLOBE, snowglobeAddress),
             strategy: new web3.eth.Contract(ABI.STRATEGY, strategyAddress),
         };
@@ -374,22 +377,22 @@ async function getPoolShareAsUSD(poolContract) {
     const totalSupply = web3.utils.toBN(await poolContract.methods.totalSupply().call());
 
     if (token0Address === WAVAX_ADDRESS) {
-        const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+        const priceWAVAX = await estimatePriceOfAssetPNG(WAVAX_ADDRESS, 18);
         return reserve0.muln(2).mul(priceWAVAX).div(totalSupply);
     } else if (token1Address === WAVAX_ADDRESS) {
-        const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+        const priceWAVAX = await estimatePriceOfAssetPNG(WAVAX_ADDRESS, 18);
         return reserve1.muln(2).mul(priceWAVAX).div(totalSupply);
     } else if (token0Address === PNG_ADDRESS) {
-        const pricePNG = await estimatePriceOfAsset(PNG_ADDRESS, 18);
+        const pricePNG = await estimatePriceOfAssetPNG(PNG_ADDRESS, 18);
         return reserve0.muln(2).mul(pricePNG).div(totalSupply);
     } else if (token1Address === PNG_ADDRESS) {
-        const pricePNG = await estimatePriceOfAsset(PNG_ADDRESS, 18);
+        const pricePNG = await estimatePriceOfAssetPNG(PNG_ADDRESS, 18);
         return reserve1.muln(2).mul(pricePNG).div(totalSupply);
     } else if (token0Address === JOE_ADDRESS) {
-        const priceJOE = await estimatePriceOfAsset(JOE_ADDRESS, 18);
+        const priceJOE = await estimatePriceOfAssetJOE(JOE_ADDRESS, 18);
         return reserve0.muln(2).mul(priceJOE).div(totalSupply);
     } else if (token1Address === JOE_ADDRESS) {
-        const priceJOE = await estimatePriceOfAsset(JOE_ADDRESS, 18);
+        const priceJOE = await estimatePriceOfAssetJOE(JOE_ADDRESS, 18);
         return reserve1.muln(2).mul(priceJOE).div(totalSupply);
     } else {
         console.error(`Could not convert want address ${poolContract._address} to USD`);
@@ -397,10 +400,24 @@ async function getPoolShareAsUSD(poolContract) {
     }
 }
 
-async function estimatePriceOfAsset(assetAddress, assetDecimals) {
+async function estimatePriceOfAssetPNG(assetAddress, assetDecimals) {
     const PANGOLIN_ROUTER_ADDRESS = '0xe54ca86531e17ef3616d22ca28b0d458b6c89106';
 
-    const routerContract = new web3.eth.Contract(ABI.PANGOLIN_ROUTER, PANGOLIN_ROUTER_ADDRESS);
-    const [input, output] = await routerContract.methods.getAmountsOut('1' + '0'.repeat(assetDecimals), [assetAddress, DAI_ADDRESS]).call();
+    const routerContract = new web3.eth.Contract(ABI.ROUTER, PANGOLIN_ROUTER_ADDRESS);
+    const [, output] = await routerContract.methods.getAmountsOut('1' + '0'.repeat(assetDecimals), [assetAddress, DAI_ADDRESS]).call();
     return web3.utils.toBN(output);
+}
+
+async function estimatePriceOfAssetJOE(assetAddress, assetDecimals) {
+    const JOE_ROUTER_ADDRESS = '0x60aE616a2155Ee3d9A68541Ba4544862310933d4';
+
+    
+    const PANGOLIN_ROUTER_ADDRESS = '0xe54ca86531e17ef3616d22ca28b0d458b6c89106';
+
+    const pngRouterContract = new web3.eth.Contract(ABI.ROUTER, PANGOLIN_ROUTER_ADDRESS);
+    const [, priceWAVAX] = await pngRouterContract.methods.getAmountsOut('1' + '0'.repeat(assetDecimals), [WAVAX_ADDRESS, DAI_ADDRESS]).call();
+
+    const joeRouterContract = new web3.eth.Contract(ABI.ROUTER, JOE_ROUTER_ADDRESS);
+    const [, output] = await joeRouterContract.methods.getAmountsOut('1' + '0'.repeat(assetDecimals), [assetAddress, WAVAX_ADDRESS]).call();
+    return web3.utils.toBN(output*priceWAVAX);
 }
