@@ -4,8 +4,7 @@ const Web3 = require('web3');
 const web3 = new Web3(new Web3.providers.HttpProvider('https://api.avax.network/ext/bc/C/rpc'));
 const Util = require('./Util');
 const DiscordBot = require('./DiscordBot');
-const Wants = require('./Wants');
-const Config = require('../../config/Config');
+const WANTS = require('../../config/Wants');
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 const WAVAX_ADDRESS = '0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7';
 const PNG_ADDRESS = '0x60781c2586d68229fde47564546784ab3faca982';
@@ -24,11 +23,10 @@ let executionWindowCenter = Date.now();
 let executionDrift = 0;
 
 // Manually trigger first harvest cycle
-if (Config.DISCORD.ENABLED){
+if (CONFIG.DISCORD.ENABLED){
     DiscordBot.login(CONFIG.DISCORD.TOKEN).then(harvest);
-}
-else {
-    harvest()
+} else {
+    harvest();
 }
 
 
@@ -45,25 +43,25 @@ function harvest() {
         .catch(handleError);
 }
 
-async function getPools() {
-    const omits = Wants.OVERRIDE_OMIT;
-    const adds = Wants.OVERRIDE_ADD;
+async function getSnowglobes() {
+    const gauge_proxy = new web3.eth.Contract(ABI.GAUGE_PROXY, WANTS.GAUGE_PROXY_ADDRESS);
 
-    const gauge_proxy = new web3.eth.Contract(ABI.GAUGE_PROXY, Wants.GAUGE_PROXY_ADDRESS);
+    let snowglobes = await gauge_proxy.methods.tokens().call();
 
-    const pools = await gauge_proxy.methods.tokens().call();
+    // Ensure address formatting is compatible across the harvester
+    snowglobes = snowglobes.map(address => address.toLowerCase());
 
-    console.log("pools: ",pools);
+    console.log("snowglobes:", snowglobes);
 
-    // remove omit overrides
-    pools.filter(pool => pool in omits)
+    // remove omitted overrides
+    snowglobes = snowglobes.filter(snowglobe => !WANTS.OVERRIDE_OMIT.includes(snowglobe));
 
     // append add overrides
-    Object.keys(adds).map((key, index) => {
-        pools.push(key)
+    WANTS.OVERRIDE_ADD.forEach(override => {
+        if (!snowglobes.includes(override)) snowglobes.add(override);
     })
 
-    return pools
+    return snowglobes;
 }
 
 async function initHarvests() {
@@ -71,21 +69,46 @@ async function initHarvests() {
 
     const gasPrice = await web3.eth.getGasPrice();
 
-    const pools = await getPools()
+    const snowglobes = await getSnowglobes();
 
-    pools.map( async poolAddress => {
-        const { controller, want, snowglobe, strategy } = await initializeContracts(CONFIG.CONTROLLERS, poolAddress);
+    // for (const snowglobeAddress of snowglobes) {
+    //     const { controller, want, snowglobe, strategy } = await initializeContracts(CONFIG.CONTROLLERS, snowglobeAddress);
+    //     const snowglobeSymbol = await snowglobe.methods.symbol().call();
+    //     const wantSymbol = await want.methods.symbol().call();
+    //     const wantDecimals = parseInt(await want.methods.decimals().call());
+    //     const token0_addr = (await want.methods.token0().call()).toLowerCase();
+    //     const token1_addr = (await want.methods.token1().call()).toLowerCase();
+    //     const token0 = new web3.eth.Contract(ABI.TOKEN, token0_addr);
+    //     const token1 = new web3.eth.Contract(ABI.TOKEN, token1_addr);
+    //     const token0_name = await token0.methods.symbol().call();
+    //     const token1_name = await token1.methods.symbol().call();
+    //
+    //     harvests.push({
+    //         name: `${token0_name}-${token1_name}`,
+    //         controller,
+    //         want,
+    //         wantSymbol,
+    //         wantDecimals,
+    //         snowglobe,
+    //         snowglobeSymbol,
+    //         strategy,
+    //         gasPrice,
+    //     });
+    // }
+
+    return Promise.all(snowglobes.map(async snowglobeAddress => {
+        const { controller, want, snowglobe, strategy } = await initializeContracts(CONFIG.CONTROLLERS, snowglobeAddress);
         const snowglobeSymbol = await snowglobe.methods.symbol().call();
         const wantSymbol = await want.methods.symbol().call();
         const wantDecimals = parseInt(await want.methods.decimals().call());
-        const token0_addr = await want.methods.token0.call();
-        const token1_addr = await want.methods.token1.call();
-        const token0 = new web3.eth.Contract(ABI.ERC20, token0_addr) 
-        const token1 = new web3.eth.Contract(ABI.ERC20, token1_addr)
+        const token0_addr = (await want.methods.token0().call()).toLowerCase();
+        const token1_addr = (await want.methods.token1().call()).toLowerCase();
+        const token0 = new web3.eth.Contract(ABI.TOKEN, token0_addr);
+        const token1 = new web3.eth.Contract(ABI.TOKEN, token1_addr);
         const token0_name = await token0.methods.symbol().call();
         const token1_name = await token1.methods.symbol().call();
 
-        harvests.push({
+        return {
             name: `${token0_name}-${token1_name}`,
             controller,
             want,
@@ -95,10 +118,8 @@ async function initHarvests() {
             snowglobeSymbol,
             strategy,
             gasPrice,
-        });
-    })
-
-    return harvests;
+        };
+    }));
 }
 
 function addRequirements(harvests) {
@@ -106,11 +127,13 @@ function addRequirements(harvests) {
         let rewardPrice
         switch(harvest.wantSymbol) {
             case("PGL"):
-                rewardPrice = await estimatePriceOfAsset(PNG_ADDRESS, 18)
+                rewardPrice = await estimatePriceOfAsset(PNG_ADDRESS, 18);
+                break;
             case("JLP"):
-                rewardPrice = await estimatePriceOfAsset(JLP_ADDRESS, 18)
+                rewardPrice = await estimatePriceOfAsset(JOE_ADDRESS, 18);
+                break;
             default:
-                null
+                throw new Error(`Unknown symbol: ${harvest.wantSymbol}`);
         }
 
         return {
@@ -344,25 +367,23 @@ function scheduleNextHarvest() {
 
 async function initializeContracts(controllerAddresses, snowglobeAddress) {
     if (!web3.utils.isAddress(snowglobeAddress)) throw new Error(`Invalid snowGlobe address ${snowglobeAddress}`);
-    let wantAddress
 
     for (const controllerAddress of controllerAddresses) {
         if (!web3.utils.isAddress(controllerAddress)) throw new Error(`Invalid controller address ${controllerAddress}`);
 
         const controller = new web3.eth.Contract(ABI.CONTROLLER, controllerAddress);
         const snowglobe = new web3.eth.Contract(ABI.SNOWGLOBE, snowglobeAddress);
-        wantAddress = await snowglobe.methods.token().call();
-        snowglobeAddress = await controller.methods.globes(wantAddress).call();
+        const wantAddress = await snowglobe.methods.token().call();
         const strategyAddress = await controller.methods.strategies(wantAddress).call();
 
-        if (strategyAddress !== ZERO_ADDRESS && snowglobeAddress !== ZERO_ADDRESS) return {
+        if (strategyAddress !== ZERO_ADDRESS && !!snowglobe) return {
             controller,
+            snowglobe,
             want: new web3.eth.Contract(ABI.PANGOLIN_POOL, wantAddress),
-            snowglobe: new web3.eth.Contract(ABI.SNOWGLOBE, snowglobeAddress),
             strategy: new web3.eth.Contract(ABI.STRATEGY, strategyAddress),
         };
     }
-    throw new Error(`Could not identify a strategy & snowglobe for want address ${wantAddress}`);
+    throw new Error(`Could not identify a strategy and contract for snowglobe ${snowglobeAddress}`);
 }
 
 async function getPoolShareAsUSD(poolContract) {
