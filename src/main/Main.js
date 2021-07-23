@@ -134,12 +134,21 @@ async function addRequirements(harvests) {
     const addHarvestFees = async (harvest) => {
         if (!priceMap[harvest.wantSymbol]) throw new Error(`Unknown symbol: ${harvest.wantSymbol}`);
 
+        let harvestable;
+        try {
+            harvestable = web3.utils.toBN(await harvest.strategy.methods.getHarvestable().call());
+        } catch(err) {
+            // This fails for certain strategies ex. strategy 0x868d0F1985e7e5585747bd6E9B111D031B71F960
+            // Assuming the harvest should happen
+            harvestable = web3.utils.toBN('0xffffffffffffffffff');
+        }
+
         return {
             ...harvest,
-            harvestable: web3.utils.toBN(await harvest.strategy.methods.getHarvestable().call()), // This fails for ex. strategy 0x868d0F1985e7e5585747bd6E9B111D031B71F960
+            harvestable,
             treasuryFee: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
             treasuryMax: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryMax().call()),
-            // balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
+            balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
             available: web3.utils.toBN(await harvest.snowglobe.methods.available().call()),
             priceWAVAX: priceMap['WAVAX'],
             rewardPrice: priceMap[harvest.wantSymbol],
