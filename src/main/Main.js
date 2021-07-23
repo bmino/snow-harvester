@@ -26,7 +26,7 @@ let executionDrift = 0;
 
 // Manually trigger first harvest cycle
 if (CONFIG.DISCORD.ENABLED){
-    DiscordBot.login(CONFIG.DISCORD.ERC20).then(harvest);
+    DiscordBot.login(CONFIG.DISCORD.TOKEN).then(harvest);
 } else {
     harvest();
 }
@@ -48,16 +48,13 @@ function harvest() {
 async function getSnowglobes() {
     const gauge_proxy = new web3.eth.Contract(ABI.GAUGE_PROXY, WANTS.GAUGE_PROXY_ADDRESS);
 
-    let pools = await gauge_proxy.methods.tokens().call();
-
-    // Ensure address formatting is compatible across the harvester
-    pools = pools.map(address => address.toLowerCase());
+    const pools = await gauge_proxy.methods.tokens().call();
 
     console.log("pools:", pools);
 
-    return = [
+    return [
         // remove omitted overrides
-        ...pools.filter(snowglobe => !WANTS.OVERRIDE_OMIT.includes(snowglobe)),
+        ...pools.filter(pool => !WANTS.OVERRIDE_OMIT.includes(pool)),
 
         // append add overrides
         ...WANTS.OVERRIDE_ADD,
@@ -353,45 +350,53 @@ async function initializeContracts(controllerAddresses, snowglobeAddress) {
 
         const controller = new web3.eth.Contract(ABI.CONTROLLER, controllerAddress);
         const snowglobe = new web3.eth.Contract(ABI.SNOWGLOBE, snowglobeAddress);
+
         const wantAddress = await snowglobe.methods.token().call();
+        if (wantAddress === ZERO_ADDRESS) continue;
+
         const strategyAddress = await controller.methods.strategies(wantAddress).call();
+        if (strategyAddress === ZERO_ADDRESS) continue;
+
         const controllerSnowglobeAddress = await controller.methods.globes(wantAddress).call();
 
-        if (strategyAddress !== ZERO_ADDRESS && controllerSnowglobeAddress === snowglobeAddress) return {
+        if (controllerSnowglobeAddress !== snowglobeAddress) continue;
+
+        return {
             controller,
             snowglobe,
             want: new web3.eth.Contract(ABI.UNI_V2_POOL, wantAddress),
             strategy: new web3.eth.Contract(ABI.STRATEGY, strategyAddress),
         };
     }
+
     throw new Error(`Could not identify contracts for snowglobe ${snowglobeAddress}`);
 }
 
 async function getPoolShareAsUSD(poolContract) {
-    const token0Address = (await poolContract.methods.token0().call()).toLowerCase();
-    const token1Address = (await poolContract.methods.token1().call()).toLowerCase();
+    const token0Address = await poolContract.methods.token0().call();
+    const token1Address = await poolContract.methods.token1().call();
     const { _reserve0, _reserve1 } = await poolContract.methods.getReserves().call();
     const reserve0 = web3.utils.toBN(_reserve0);
     const reserve1 = web3.utils.toBN(_reserve1);
     const totalSupply = web3.utils.toBN(await poolContract.methods.totalSupply().call());
 
     if (token0Address === WAVAX_ADDRESS) {
-        const priceWAVAX = await estimatePriceOfAssetPNG(WAVAX_ADDRESS, 18);
+        const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
         return reserve0.muln(2).mul(priceWAVAX).div(totalSupply);
     } else if (token1Address === WAVAX_ADDRESS) {
-        const priceWAVAX = await estimatePriceOfAssetPNG(WAVAX_ADDRESS, 18);
+        const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
         return reserve1.muln(2).mul(priceWAVAX).div(totalSupply);
     } else if (token0Address === PNG_ADDRESS) {
-        const pricePNG = await estimatePriceOfAssetPNG(PNG_ADDRESS, 18);
+        const pricePNG = await estimatePriceOfAsset(PNG_ADDRESS, 18);
         return reserve0.muln(2).mul(pricePNG).div(totalSupply);
     } else if (token1Address === PNG_ADDRESS) {
-        const pricePNG = await estimatePriceOfAssetPNG(PNG_ADDRESS, 18);
+        const pricePNG = await estimatePriceOfAsset(PNG_ADDRESS, 18);
         return reserve1.muln(2).mul(pricePNG).div(totalSupply);
     } else if (token0Address === JOE_ADDRESS) {
-        const priceJOE = await estimatePriceOfAssetJOE(JOE_ADDRESS, 18);
+        const priceJOE = await estimatePriceOfAsset(JOE_ADDRESS, 18);
         return reserve0.muln(2).mul(priceJOE).div(totalSupply);
     } else if (token1Address === JOE_ADDRESS) {
-        const priceJOE = await estimatePriceOfAssetJOE(JOE_ADDRESS, 18);
+        const priceJOE = await estimatePriceOfAsset(JOE_ADDRESS, 18);
         return reserve1.muln(2).mul(priceJOE).div(totalSupply);
     } else {
         console.error(`Could not convert want address ${poolContract._address} to USD`);
