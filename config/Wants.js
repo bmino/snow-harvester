@@ -10,7 +10,12 @@ const Wants = {
   OVERRIDE_ADD: [
     // '0x0000000000000000000000000000000000000000', // 'Add-Pool'
   ],
+
+  CONTROLLERS: [
+    '0xACc69DEeF119AB5bBf14e6Aaf0536eAFB3D6e046', // second deployment (must come first to supersede other controller
+    '0xf7B8D9f8a82a7a6dd448398aFC5c77744Bd6cb85', // first deployment
+  ],
   
 };  
 
-module.exports = Wants
+module.exports = Wants;

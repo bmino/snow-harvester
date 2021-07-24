@@ -67,7 +67,7 @@ async function initHarvests() {
     const snowglobes = await getSnowglobes();
 
     return Promise.all(snowglobes.map(async snowglobeAddress => {
-        const { controller, want, snowglobe, strategy } = await initializeContracts(CONFIG.CONTROLLERS, snowglobeAddress);
+        const { controller, want, snowglobe, strategy } = await initializeContracts(WANTS.CONTROLLERS, snowglobeAddress);
         const snowglobeSymbol = await snowglobe.methods.symbol().call();
         const wantSymbol = await want.methods.symbol().call();
         const wantDecimals = parseInt(await want.methods.decimals().call());
