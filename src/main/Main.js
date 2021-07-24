@@ -50,8 +50,6 @@ async function getSnowglobes() {
 
     const pools = await gauge_proxy.methods.tokens().call();
 
-    console.log("pools:", pools);
-
     return [
         // remove omitted overrides
         ...pools.filter(pool => !WANTS.OVERRIDE_OMIT.includes(pool)),
@@ -103,17 +101,21 @@ async function addRequirements(harvests) {
         if (!priceMap[harvest.wantSymbol]) throw new Error(`Unknown symbol: ${harvest.wantSymbol}`);
 
         let harvestable;
+        let harvestOverride = false;
+
         try {
             harvestable = web3.utils.toBN(await harvest.strategy.methods.getHarvestable().call());
         } catch(err) {
-            // This fails for certain strategies ex. strategy 0x868d0F1985e7e5585747bd6E9B111D031B71F960
-            // Assuming the harvest should happen
-            harvestable = web3.utils.toBN('0xffffffffffffffffff');
+            // This fails for certain strategies where the strategy lacks a `rewarder`
+            // Assuming the harvest should happen for now
+            harvestable = web3.utils.toBN(0);
+            harvestOverride = true;
         }
 
         return {
             ...harvest,
             harvestable,
+            harvestOverride,
             treasuryFee: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
             treasuryMax: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryMax().call()),
             balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
@@ -178,7 +180,10 @@ function addDecisions(harvests) {
         const cost = web3.utils.toBN(harvest.harvestGas).mul(web3.utils.toBN(harvest.gasPrice));
         const gain = harvest.gainWAVAX.mul(harvest.treasuryFee).div(harvest.treasuryMax);
         const FIVE_THOUSAND_USD = web3.utils.toBN('5000' + '0'.repeat(18));
-        const harvestDecision = cost.lt(gain);
+        const harvestDecision = cost.lt(gain) || harvest.harvestOverride;
+        if (harvest.harvestOverride && !cost.lt(gain)) {
+            console.log(`Harvest decision overridden by flag!`);
+        }
         console.log(`Harvest decision: ${harvestDecision}`);
         const earnDecision = harvest.ratio.gten(1) && harvest.availableUSD.gt(FIVE_THOUSAND_USD);
         console.log(`Earn decision: ${earnDecision}`);
@@ -243,7 +248,7 @@ function logHarvestingResults({ results, harvests }) {
         if (value || !CONFIG.EXECUTION.ENABLED) {
             // Successfully called harvest() or a test run
             console.log(`Strategy:    ${harvest.name} (${value?.to ?? harvest.strategy._address})`);
-            console.log(`Reinvested:  ${Util.displayBNasFloat(harvest.harvestable, 18)} ${token} ($${Util.displayBNasFloat(harvest.gainUSD, 18)})`);
+            console.log(`Reinvested:  ${harvest.harvestOverride ? 'Unknown' : Util.displayBNasFloat(harvest.harvestable, 18)} ${token} ($${harvest.harvestOverride ? '?.??' : Util.displayBNasFloat(harvest.gainUSD, 18)})`);
             console.log(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
         } else {
             // Failed to execute harvest()
@@ -291,8 +296,8 @@ async function discordHarvestUpdate({ results, harvests }) {
                 Thumbnail:Util.thumbnailLink(harvest.name),
                 URL:Util.cchainTransactionLink(value.transactionHash),
             };
-            const message = `**Reinvested:**  ${Util.displayBNasFloat(harvest.harvestable, 18, 2)} **${harvest.symbol}**\n`+
-                            `**Value**:  $${Util.displayBNasFloat(harvest.gainUSD, 18, 2)}`;
+            const message = `**Reinvested:**  ${harvest.harvestOverride ? 'Unknown' : Util.displayBNasFloat(harvest.harvestable, 18, 2)} **${harvest.symbol}**\n`+
+                            `**Value**:  $${harvest.harvestOverride ? '?.??' : Util.displayBNasFloat(harvest.gainUSD, 18, 2)}`;
             embedObj.Description = message;
             DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
         }
