@@ -97,8 +97,15 @@ async function addRequirements(harvests) {
         'JLP': await estimatePriceOfAsset(JOE_ADDRESS, 18),
     };
 
+    const rewardMap = {
+        'PGL': 'PNG',
+        'JLP': 'JOE',
+    };
+
     const addHarvestFees = async (harvest) => {
-        if (!priceMap[harvest.wantSymbol]) throw new Error(`Unknown symbol: ${harvest.wantSymbol}`);
+        if (!priceMap[harvest.wantSymbol] || !rewardMap[harvest.wantSymbol]) {
+            throw new Error(`Unknown symbol: ${harvest.wantSymbol}`);
+        }
 
         let harvestable;
         let harvestOverride = false;
@@ -116,6 +123,7 @@ async function addRequirements(harvests) {
             ...harvest,
             harvestable,
             harvestOverride,
+            harvestSymbol: rewardMap[harvest.wantSymbol],
             treasuryFee: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
             treasuryMax: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryMax().call()),
             balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
@@ -234,21 +242,10 @@ function logHarvestingResults({ results, harvests }) {
         if (!harvest.harvestDecision) continue;
         const {reason, value} = results[i];
         console.log(`--------------------------------------------------------------------`);
-        let token
-        switch(harvest.wantSymbol) {
-            case("PGL"):
-                token = "PNG";
-                break;
-            case("JLP"):
-                token = "JOE";
-                break;
-            default:
-                throw new Error(`Unknown symbol: ${harvest.wantSymbol}`);
-        }
         if (value || !CONFIG.EXECUTION.ENABLED) {
             // Successfully called harvest() or a test run
             console.log(`Strategy:    ${harvest.name} (${value?.to ?? harvest.strategy._address})`);
-            console.log(`Reinvested:  ${harvest.harvestOverride ? 'Unknown' : Util.displayBNasFloat(harvest.harvestable, 18)} ${token} ($${harvest.harvestOverride ? '?.??' : Util.displayBNasFloat(harvest.gainUSD, 18)})`);
+            console.log(`Reinvested:  ${harvest.harvestOverride ? 'Unknown' : Util.displayBNasFloat(harvest.harvestable, 18)} ${harvest.harvestSymbol} ($${harvest.harvestOverride ? '?.??' : Util.displayBNasFloat(harvest.gainUSD, 18)})`);
             console.log(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
         } else {
             // Failed to execute harvest()
@@ -296,7 +293,7 @@ async function discordHarvestUpdate({ results, harvests }) {
                 Thumbnail:Util.thumbnailLink(harvest.name),
                 URL:Util.cchainTransactionLink(value.transactionHash),
             };
-            const message = `**Reinvested:**  ${harvest.harvestOverride ? 'Unknown' : Util.displayBNasFloat(harvest.harvestable, 18, 2)} **${harvest.symbol}**\n`+
+            const message = `**Reinvested:**  ${harvest.harvestOverride ? 'Unknown' : Util.displayBNasFloat(harvest.harvestable, 18, 2)} **${harvest.harvestSymbol}**\n`+
                             `**Value**:  $${harvest.harvestOverride ? '?.??' : Util.displayBNasFloat(harvest.gainUSD, 18, 2)}`;
             embedObj.Description = message;
             DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
