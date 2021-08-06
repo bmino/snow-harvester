@@ -36,8 +36,8 @@ function harvest() {
     initHarvests()
         .then(addRequirements)
         .then(addCalculations)
-        .then(addTx)
-        .then(addGas)
+        .then(addEarnTx)
+        .then(addHarvestTx)
         .then(addDecisions)
         .then(doHarvesting)
         .then(doEarning)
@@ -142,44 +142,48 @@ async function addRequirements(harvests) {
 }
 
 function addCalculations(harvests) {
-    const addHarvestGain = async (harvest) => ({
+    const addHarvestGain = (harvest) => ({
         ...harvest,
         gainWAVAX: harvest.harvestable.mul(harvest.rewardPrice).div(harvest.priceWAVAX),
         gainUSD: harvest.harvestable.mul(harvest.rewardPrice).div(Util.offset(18)),
         ratio: harvest.available.muln(100).div(harvest.balance),
         availableUSD: harvest.available.mul(harvest.priceWant).div(Util.offset(harvest.wantDecimals)),
     });
-    return Promise.all(harvests.map(addHarvestGain))
-        .catch(err => {
-            console.error(`Error adding calculations`);
-            throw err;
-        });
+    return harvests.map(addHarvestGain);
 }
 
-function addTx(harvests) {
-    const addHarvestTx = async (harvest) => ({
-        ...harvest,
-        harvestTx: harvest.strategy.methods.harvest(),
-        earnTx: harvest.snowglobe.methods.earn(),
-    });
-    return Promise.all(harvests.map(addHarvestTx))
-        .catch(err => {
-            console.error(`Error adding tx`);
-            throw err;
-        });
+async function addEarnTx(harvests) {
+    const addTx = async (harvest) => {
+        const earnTx = harvest.snowglobe.methods.earn();
+        return {
+            ...harvest,
+            earnTx,
+            earnGas: await earnTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
+        };
+    };
+    const handleRejection = (harvest, err) => {
+        console.error(`Skipping ${harvest.name} due to earn() error (snowglobe: ${harvest.snowglobe._address})`);
+        console.error(err);
+    };
+    return Promise.allSettled(harvests.map(addTx))
+        .then(results => handleSettledPromises(results, harvests, handleRejection));
 }
 
-async function addGas(harvests) {
-    const addHarvestGas = async (harvest) => ({
-        ...harvest,
-        harvestGas: await harvest.harvestTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
-        earnGas: await harvest.earnTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
-    });
-    return Promise.all(harvests.map(addHarvestGas))
-        .catch(err => {
-            console.error(`Error adding gas`);
-            throw err;
-        });
+async function addHarvestTx(harvests) {
+    const addTx = async (harvest) => {
+        const harvestTx = harvest.strategy.methods.harvest();
+        return {
+            ...harvest,
+            harvestTx,
+            harvestGas: await harvestTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
+        };
+    };
+    const handleRejection = (harvest, err) => {
+        console.error(`Skipping ${harvest.name} due to harvest() error (strategy: ${harvest.strategy._address})`);
+        console.error(err);
+    };
+    return Promise.allSettled(harvests.map(addTx))
+        .then(results => handleSettledPromises(results, harvests, handleRejection));
 }
 
 function addDecisions(harvests) {
@@ -327,6 +331,15 @@ async function discordEarnUpdate({ results, harvests }) {
 function handleError(err) {
     console.error(err);
     setTimeout(() => process.exit(1), 1000); // Ensure stderr has time to flush buffer
+}
+
+function handleSettledPromises(results, originals, rejectCallback) {
+    results
+        .filter(result => result.status !== 'fulfilled')
+        .forEach((result, i) => rejectCallback(originals[i], new Error(result.reason.message)));
+    return results
+        .filter(result => result.status === 'fulfilled')
+        .map(result => result.value);
 }
 
 function scheduleNextHarvest() {
