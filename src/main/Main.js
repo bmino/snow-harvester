@@ -191,13 +191,13 @@ function addDecisions(harvests) {
         console.log(`Determining execution decisions for ${harvest.name}`);
         const cost = web3.utils.toBN(harvest.harvestGas).mul(web3.utils.toBN(harvest.gasPrice));
         const gain = harvest.gainWAVAX.mul(harvest.treasuryFee).div(harvest.treasuryMax);
-        const FIVE_THOUSAND_USD = web3.utils.toBN('5000' + '0'.repeat(18));
+        const TWO_HUNDRED_USD = web3.utils.toBN('200' + '0'.repeat(18));
         const harvestDecision = cost.lt(gain) || harvest.harvestOverride;
         if (harvest.harvestOverride && !cost.lt(gain)) {
             console.log(`Harvest decision overridden by flag!`);
         }
         console.log(`Harvest decision: ${harvestDecision}`);
-        const earnDecision = harvest.ratio.gten(1) && harvest.availableUSD.gt(FIVE_THOUSAND_USD);
+        const earnDecision = harvest.ratio.gten(1) && harvest.availableUSD.gt(TWO_HUNDRED_USD);
         console.log(`Earn decision: ${earnDecision}`);
         return {
             ...harvest,
