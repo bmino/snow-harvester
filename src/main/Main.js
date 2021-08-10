@@ -146,7 +146,7 @@ function addCalculations(harvests) {
         ...harvest,
         gainWAVAX: harvest.harvestable.mul(harvest.rewardPrice).div(harvest.priceWAVAX),
         gainUSD: harvest.harvestable.mul(harvest.rewardPrice).div(Util.offset(18)),
-        ratio: harvest.available.muln(100).div(harvest.balance),
+        ratio: harvest.balance.isZero() ? web3.utils.toBN(100) : harvest.available.muln(100).div(harvest.balance),
         availableUSD: harvest.available.mul(harvest.priceWant).div(Util.offset(harvest.wantDecimals)),
     });
     return harvests.map(addHarvestGain);
