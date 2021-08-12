@@ -65,7 +65,7 @@ async function initHarvests() {
     const snowglobes = await getSnowglobes();
 
     const handleRejection = (snowglobe, err) => {
-        console.error(`Could not initialize contracts for snowglobe (${snowglobe})`);
+        console.error(`Could not initialize contracts for snowglobe (${Util.cchainAddressLink(snowglobe)})`);
         console.error(err);
     };
 
@@ -185,7 +185,7 @@ async function addHarvestTx(harvests) {
         };
     };
     const handleRejection = (harvest, err) => {
-        console.error(`Skipping ${harvest.name} due to harvest() error (strategy: ${harvest.strategy._address})`);
+        console.error(`Skipping ${harvest.name} due to harvest() error (strategy: ${Util.cchainAddressLink(harvest.strategy._address)})`);
         console.error(err);
     };
     return Promise.allSettled(harvests.map(addTx))
