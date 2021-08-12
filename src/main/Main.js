@@ -64,7 +64,12 @@ async function initHarvests() {
 
     const snowglobes = await getSnowglobes();
 
-    return Promise.all(snowglobes.map(async snowglobeAddress => {
+    const handleRejection = (snowglobe, err) => {
+        console.error(`Could not initialize contracts for snowglobe (${snowglobe})`);
+        console.error(err);
+    };
+
+    return Promise.allSettled(snowglobes.map(async snowglobeAddress => {
         const { controller, want, snowglobe, strategy } = await initializeContracts(WANTS.CONTROLLERS, snowglobeAddress);
         const snowglobeSymbol = await snowglobe.methods.symbol().call();
         const wantSymbol = await want.methods.symbol().call();
@@ -87,7 +92,8 @@ async function initHarvests() {
             strategy,
             gasPrice,
         };
-    }));
+    }))
+        .then(results => handleSettledPromises(results, snowglobes, handleRejection));
 }
 
 async function addRequirements(harvests) {
