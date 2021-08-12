@@ -334,9 +334,9 @@ function handleError(err) {
 }
 
 function handleSettledPromises(results, originals, rejectCallback) {
-    results
-        .filter(result => result.status !== 'fulfilled')
-        .forEach((result, i) => rejectCallback(originals[i], new Error(result.reason.message)));
+    results.forEach((result, i) => {
+        if (result.status !== 'fulfilled') rejectCallback(originals[i], new Error(result.reason.message))
+    });
     return results
         .filter(result => result.status === 'fulfilled')
         .map(result => result.value);
