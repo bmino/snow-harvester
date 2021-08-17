@@ -64,7 +64,12 @@ async function initHarvests() {
 
     const snowglobes = await getSnowglobes();
 
-    return Promise.all(snowglobes.map(async snowglobeAddress => {
+    const handleRejection = (snowglobe, err) => {
+        console.error(`Could not initialize contracts for snowglobe (${Util.cchainAddressLink(snowglobe)})`);
+        console.error(err);
+    };
+
+    return Promise.allSettled(snowglobes.map(async snowglobeAddress => {
         const { controller, want, snowglobe, strategy } = await initializeContracts(WANTS.CONTROLLERS, snowglobeAddress);
         const snowglobeSymbol = await snowglobe.methods.symbol().call();
         const wantSymbol = await want.methods.symbol().call();
@@ -87,7 +92,8 @@ async function initHarvests() {
             strategy,
             gasPrice,
         };
-    }));
+    }))
+        .then(results => handleSettledPromises(results, snowglobes, handleRejection));
 }
 
 async function addRequirements(harvests) {
@@ -179,7 +185,7 @@ async function addHarvestTx(harvests) {
         };
     };
     const handleRejection = (harvest, err) => {
-        console.error(`Skipping ${harvest.name} due to harvest() error (strategy: ${harvest.strategy._address})`);
+        console.error(`Skipping ${harvest.name} due to harvest() error (strategy: ${Util.cchainAddressLink(harvest.strategy._address)})`);
         console.error(err);
     };
     return Promise.allSettled(harvests.map(addTx))
@@ -334,9 +340,9 @@ function handleError(err) {
 }
 
 function handleSettledPromises(results, originals, rejectCallback) {
-    results
-        .filter(result => result.status !== 'fulfilled')
-        .forEach((result, i) => rejectCallback(originals[i], new Error(result.reason.message)));
+    results.forEach((result, i) => {
+        if (result.status !== 'fulfilled') rejectCallback(originals[i], new Error(result.reason.message))
+    });
     return results
         .filter(result => result.status === 'fulfilled')
         .map(result => result.value);
