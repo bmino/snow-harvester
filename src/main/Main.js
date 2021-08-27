@@ -70,19 +70,31 @@ async function initHarvests() {
     };
 
     return Promise.allSettled(snowglobes.map(async snowglobeAddress => {
-        const { controller, want, snowglobe, strategy } = await initializeContracts(WANTS.CONTROLLERS, snowglobeAddress);
+        const { controller, want, snowglobe, strategy, type } = await initializeContracts(WANTS.CONTROLLERS, snowglobeAddress);
         const snowglobeSymbol = await snowglobe.methods.symbol().call();
         const wantSymbol = await want.methods.symbol().call();
         const wantDecimals = parseInt(await want.methods.decimals().call());
-        const token0_addr = await want.methods.token0().call();
-        const token1_addr = await want.methods.token1().call();
-        const token0 = new web3.eth.Contract(ABI.ERC20, token0_addr) 
-        const token1 = new web3.eth.Contract(ABI.ERC20, token1_addr)
-        const token0_name = await token0.methods.symbol().call();
-        const token1_name = await token1.methods.symbol().call();
+        
+        let name;
+        switch(type){
+          case "LP":
+            const token0_addr = await want.methods.token0().call();
+            const token1_addr = await want.methods.token1().call();
+            const token0 = new web3.eth.Contract(ABI.ERC20, token0_addr) 
+            const token1 = new web3.eth.Contract(ABI.ERC20, token1_addr)
+            const token0_name = await token0.methods.symbol().call();
+            const token1_name = await token1.methods.symbol().call();
+            name = `${token0_name}-${token1_name}`;
+            break;
+          default:
+            name = wantSymbol;
+            break;
+        }
+
 
         return {
-            name: `${token0_name}-${token1_name}`,
+            name,
+            type,
             controller,
             want,
             wantSymbol,
@@ -97,19 +109,32 @@ async function initHarvests() {
 }
 
 async function addRequirements(harvests) {
-    const priceMap = {
-        'WAVAX': await estimatePriceOfAsset(WAVAX_ADDRESS, 18),
-        'PGL': await estimatePriceOfAsset(PNG_ADDRESS, 18),
-        'JLP': await estimatePriceOfAsset(JOE_ADDRESS, 18),
-    };
+    const priceMap = async (type,symbol, want, wantAddress) => {
+      switch(symbol){
+        case 'WAVAX': return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+        case 'PGL': return await estimatePriceOfAsset(PNG_ADDRESS, 18);
+        case 'JLP': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
+      }
 
-    const rewardMap = {
-        'PGL': 'PNG',
-        'JLP': 'JOE',
+      switch(type){
+        case 'ERC20':
+          const tokenDecimals = await want.methods.decimals();
+          return await estimatePriceOfAsset(wantAddress, tokenDecimals);
+      }
+    }
+
+    const rewardMap = (wantSymbol) => {
+      switch(wantSymbol){
+        case 'PGL': return 'PNG';
+        case 'JLP': return 'JOE';
+        default:
+          return wantSymbol;
+      }
     };
 
     const addHarvestFees = async (harvest) => {
-        if (!priceMap[harvest.wantSymbol] || !rewardMap[harvest.wantSymbol]) {
+        if (!priceMap(harvest.wantSymbol,harvest.type,harvest.want,harvest.wantAddress) || 
+          !rewardMap(harvest.wantSymbol)) {
             throw new Error(`Unknown symbol: ${harvest.wantSymbol}`);
         }
 
@@ -382,10 +407,24 @@ async function initializeContracts(controllerAddresses, snowglobeAddress) {
 
         if (controllerSnowglobeAddress !== snowglobeAddress) continue;
 
+        let type,poolToken = new web3.eth.Contract(ABI.UNI_V2_POOL, wantAddress);
+
+        try {
+          //test if this is an LP Token
+          await poolToken.methods.token1().call();
+          type = 'LP';
+        } catch (error) {
+          //not LP
+          poolToken = new web3.eth.Contract(ABI.ERC20, wantAddress);
+          type = 'ERC20';
+        }
+
         return {
             controller,
             snowglobe,
-            want: new web3.eth.Contract(ABI.UNI_V2_POOL, wantAddress),
+            want: poolToken,
+            wantAddress,
+            type,
             strategy: new web3.eth.Contract(ABI.STRATEGY, strategyAddress),
         };
     }
