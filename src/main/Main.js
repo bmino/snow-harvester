@@ -159,9 +159,9 @@ async function addRequirements(harvests) {
             treasuryMax: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryMax().call()),
             balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
             available: web3.utils.toBN(await harvest.snowglobe.methods.available().call()),
-            priceWAVAX: priceMap['WAVAX'],
-            rewardPrice: priceMap[harvest.wantSymbol],
-            priceWant: await getPoolShareAsUSD(harvest.want),
+            priceWAVAX: priceMap('ERC20','WAVAX'),
+            rewardPrice: priceMap(harvest.type,harvest.wantSymbol,harvest.want,harvest.wantAdress),
+            priceWant: await getPoolShareAsUSD(harvest.want,harvest.type,harvest.wantAddress),
         }
     };
 
@@ -432,36 +432,41 @@ async function initializeContracts(controllerAddresses, snowglobeAddress) {
     throw new Error(`Could not identify contracts for snowglobe ${snowglobeAddress}`);
 }
 
-async function getPoolShareAsUSD(poolContract) {
-    const token0Address = await poolContract.methods.token0().call();
-    const token1Address = await poolContract.methods.token1().call();
-    const { _reserve0, _reserve1 } = await poolContract.methods.getReserves().call();
-    const reserve0 = web3.utils.toBN(_reserve0);
-    const reserve1 = web3.utils.toBN(_reserve1);
-    const totalSupply = web3.utils.toBN(await poolContract.methods.totalSupply().call());
-
-    if (token0Address === WAVAX_ADDRESS) {
-        const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
-        return reserve0.muln(2).mul(priceWAVAX).div(totalSupply);
-    } else if (token1Address === WAVAX_ADDRESS) {
-        const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
-        return reserve1.muln(2).mul(priceWAVAX).div(totalSupply);
-    } else if (token0Address === PNG_ADDRESS) {
-        const pricePNG = await estimatePriceOfAsset(PNG_ADDRESS, 18);
-        return reserve0.muln(2).mul(pricePNG).div(totalSupply);
-    } else if (token1Address === PNG_ADDRESS) {
-        const pricePNG = await estimatePriceOfAsset(PNG_ADDRESS, 18);
-        return reserve1.muln(2).mul(pricePNG).div(totalSupply);
-    } else if (token0Address === JOE_ADDRESS) {
-        const priceJOE = await estimatePriceOfAsset(JOE_ADDRESS, 18);
-        return reserve0.muln(2).mul(priceJOE).div(totalSupply);
-    } else if (token1Address === JOE_ADDRESS) {
-        const priceJOE = await estimatePriceOfAsset(JOE_ADDRESS, 18);
-        return reserve1.muln(2).mul(priceJOE).div(totalSupply);
-    } else {
-        console.error(`Could not convert want address ${poolContract._address} to USD`);
-        return web3.utils.toBN('0');
+async function getPoolShareAsUSD(poolContract,type,wantAddress) {
+    if(type === 'LP'){
+      const token0Address = await poolContract.methods.token0().call();
+      const token1Address = await poolContract.methods.token1().call();
+      const { _reserve0, _reserve1 } = await poolContract.methods.getReserves().call();
+      const reserve0 = web3.utils.toBN(_reserve0);
+      const reserve1 = web3.utils.toBN(_reserve1);
+      const totalSupply = web3.utils.toBN(await poolContract.methods.totalSupply().call());
+  
+      if (token0Address === WAVAX_ADDRESS) {
+          const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+          return reserve0.muln(2).mul(priceWAVAX).div(totalSupply);
+      } else if (token1Address === WAVAX_ADDRESS) {
+          const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+          return reserve1.muln(2).mul(priceWAVAX).div(totalSupply);
+      } else if (token0Address === PNG_ADDRESS) {
+          const pricePNG = await estimatePriceOfAsset(PNG_ADDRESS, 18);
+          return reserve0.muln(2).mul(pricePNG).div(totalSupply);
+      } else if (token1Address === PNG_ADDRESS) {
+          const pricePNG = await estimatePriceOfAsset(PNG_ADDRESS, 18);
+          return reserve1.muln(2).mul(pricePNG).div(totalSupply);
+      } else if (token0Address === JOE_ADDRESS) {
+          const priceJOE = await estimatePriceOfAsset(JOE_ADDRESS, 18);
+          return reserve0.muln(2).mul(priceJOE).div(totalSupply);
+      } else if (token1Address === JOE_ADDRESS) {
+          const priceJOE = await estimatePriceOfAsset(JOE_ADDRESS, 18);
+          return reserve1.muln(2).mul(priceJOE).div(totalSupply);
+      } else {
+          console.error(`Could not convert want address ${poolContract._address} to USD`);
+          return web3.utils.toBN('0');
+      }
+    }else{
+      return await estimatePriceOfAsset(wantAddress, 18);
     }
+
 }
 
 async function estimatePriceOfAsset(assetAddress, assetDecimals) {
