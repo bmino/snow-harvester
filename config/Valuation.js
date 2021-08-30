@@ -1,27 +1,33 @@
 const {
     PANGOLIN_ROUTER,
     JOE_ROUTER,
-    WAVAX_ADDRESS,
-    PNG_ADDRESS,
     JOE_ADDRESS,
     DAI_ADDRESS,
+    WAVAX_ADDRESS,
+    PNG_ADDRESS,
     USDT_ADDRESS,
+    XJOE_ADDRESS
 } = require('./Constants');
 
-const Valuation = {
+const Valuation = (assetAddress) => {
     // Must support a route to a stablecoin
-    [WAVAX_ADDRESS]: {
-        ROUTER: PANGOLIN_ROUTER,
-        ROUTE: [WAVAX_ADDRESS, DAI_ADDRESS],
-    },
-    [PNG_ADDRESS]: {
-        ROUTER: PANGOLIN_ROUTER,
-        ROUTE: [PNG_ADDRESS, DAI_ADDRESS],
-    },
-    [JOE_ADDRESS]: {
-        ROUTER: JOE_ROUTER,
-        ROUTE: [JOE_ADDRESS, USDT_ADDRESS],
-    },
+    switch(assetAddress){
+      case JOE_ADDRESS: case XJOE_ADDRESS:
+        return {
+          ROUTER: JOE_ROUTER,
+          ROUTE: [JOE_ADDRESS, USDT_ADDRESS],
+        }
+      case WAVAX_ADDRESS: case PNG_ADDRESS:
+        return {
+          ROUTER: PANGOLIN_ROUTER,
+          ROUTE: [assetAddress, DAI_ADDRESS],
+        }
+      default:
+        return {
+          ROUTER: PANGOLIN_ROUTER,
+          ROUTE: [assetAddress, WAVAX_ADDRESS],
+        }
+    }
 };
 
 module.exports = Valuation;

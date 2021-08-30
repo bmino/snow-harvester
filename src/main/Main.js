@@ -11,7 +11,11 @@ const {
     WAVAX_ADDRESS,
     PNG_ADDRESS,
     JOE_ADDRESS,
+    XJOE_ADDRESS,
+    BENQI_ADDRESS,
 } = require('../../config/Constants');
+const { roundDown } = require('./Util');
+const { ethers } = require('ethers');
 
 // Authenticate our wallet
 if (CONFIG.EXECUTION.ENABLED) {
@@ -110,17 +114,20 @@ async function initHarvests() {
 }
 
 async function addRequirements(harvests) {
-    const priceMap = async (type,symbol, want, wantAddress) => {
-      switch(symbol){
+    const priceMap = async (harvest) => {
+      switch(harvest.wantSymbol){
         case 'WAVAX': return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
         case 'PGL': return await estimatePriceOfAsset(PNG_ADDRESS, 18);
         case 'JLP': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
       }
 
-      switch(type){
+      switch(harvest.type){
         case 'ERC20':
-          const tokenDecimals = await want.methods.decimals();
-          return await estimatePriceOfAsset(wantAddress, tokenDecimals);
+          if(harvest.contractAddress == XJOE_ADDRESS){
+            return await estimatePriceOfAsset(JOE_ADDRESS, 18);
+          }
+        case 'BENQI':
+          return await estimatePriceOfAsset(BENQI_ADDRESS, 18);
       }
     }
 
@@ -134,7 +141,7 @@ async function addRequirements(harvests) {
     };
 
     const addHarvestFees = async (harvest) => {
-        if (!priceMap(harvest.wantSymbol,harvest.type,harvest.want,harvest.wantAddress) || 
+        if (!priceMap(harvest) || 
           !rewardMap(harvest.wantSymbol)) {
             throw new Error(`Unknown symbol: ${harvest.wantSymbol}`);
         }
@@ -160,27 +167,37 @@ async function addRequirements(harvests) {
             treasuryMax: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryMax().call()),
             balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
             available: web3.utils.toBN(await harvest.snowglobe.methods.available().call()),
-            priceWAVAX: priceMap('ERC20', 'WAVAX'),
-            rewardPrice: priceMap(harvest.type,harvest.wantSymbol,harvest.want,harvest.wantAddress),
-            priceWant: harvest.type === 'LP'? await getPoolShareAsUSD(harvest.want) : priceMap(harvest.type,harvest.wantSymbol,harvest.want,harvest.wantAddress),
+            priceWAVAX: await priceMap({type:'ERC20', wantSymbol:'WAVAX'}),
+            rewardPrice: await priceMap(harvest),
+            priceWant: harvest.type === 'LP'? await getPoolShareAsUSD(harvest.want) : await estimatePriceOfAsset(harvest.wantAddress,harvest.wantDecimals),
         }
     };
-
-    return Promise.all(harvests.map(addHarvestFees))
-        .catch(err => {
-            console.error(`Error fetching requirements from strategy`);
-            throw err;
-        });
+    return await Promise.all(harvests.map(addHarvestFees))
+    .catch(err => {
+        console.error(`Error fetching requirements from strategy`);
+        throw err;
+    });
 }
 
 function addCalculations(harvests) {
-    const addHarvestGain = (harvest) => ({
+    const addHarvestGain = (harvest) => {
+      const gainWAVAX = harvest.harvestable.mul(harvest.rewardPrice).div(harvest.priceWAVAX);
+      const gainUSD = harvest.harvestable.mul(harvest.rewardPrice).div(Util.offset(18));
+      const ratio = harvest.balance.isZero() ? web3.utils.toBN(100) : harvest.available.muln(100).div(harvest.balance);
+      const usdPrice = ethers.utils.parseUnits(
+        roundDown(
+          (harvest.available/10**harvest.wantDecimals*harvest.priceWant/1e18),harvest.wantDecimals)
+            ,harvest.wantDecimals);
+      
+      const availableUSD = web3.utils.toBN(usdPrice.toString());
+      return {
+        gainWAVAX,
+        gainUSD,
+        ratio,
+        availableUSD,
         ...harvest,
-        gainWAVAX: harvest.harvestable.mul(harvest.rewardPrice).div(harvest.priceWAVAX),
-        gainUSD: harvest.harvestable.mul(harvest.rewardPrice).div(Util.offset(18)),
-        ratio: harvest.balance.isZero() ? web3.utils.toBN(100) : harvest.available.muln(100).div(harvest.balance),
-        availableUSD: harvest.available.mul(harvest.priceWant).div(Util.offset(harvest.wantDecimals)),
-    });
+      }
+    };
     return harvests.map(addHarvestGain);
 }
 
@@ -302,7 +319,7 @@ function logEarnResults({ results, harvests }) {
         if (value || !CONFIG.EXECUTION.ENABLED) {
             // Successfully called earn() or a test run
             console.log(`Snowglobe:   ${harvest.name} (${value?.to ?? harvest.snowglobe._address})`);
-            console.log(`Swept:       ${Util.displayBNasFloat(harvest.available, 18, 5)} ${harvest.wantSymbol} ($${Util.displayBNasFloat(harvest.availableUSD, 18)})`);
+            console.log(`Swept:       ${Util.displayBNasFloat(harvest.available, harvest.wantDecimals, 5)} ${harvest.wantSymbol} ($${Util.displayBNasFloat(harvest.availableUSD, 18)})`);
             console.log(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
         } else {
             // Failed to execute earn()
@@ -352,7 +369,7 @@ async function discordEarnUpdate({ results, harvests }) {
                 Thumbnail:Util.thumbnailLink(harvest.name),
                 URL:Util.cchainTransactionLink(value.transactionHash),
             };
-            const message = `**Swept:**  ${Util.displayBNasFloat(harvest.available, 18, 5)} **${harvest.wantSymbol}**\n`+
+            const message = `**Swept:**  ${Util.displayBNasFloat(harvest.available, harvest.wantDecimals, 5)} **${harvest.wantSymbol}**\n`+
                             `**Value**:  $${Util.displayBNasFloat(harvest.availableUSD, 18, 2)}`;
             embedObj.Description = message;
             DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
@@ -417,8 +434,16 @@ async function initializeContracts(controllerAddresses, snowglobeAddress) {
         } catch (error) {
           //not LP
           poolToken = new web3.eth.Contract(ABI.ERC20, wantAddress);
-          type = 'ERC20';
+          try{
+            //test if this is from benqi
+            const strategyContract = new web3.eth.Contract(ABI.STRATEGY, strategyAddress);
+            await strategyContract.methods.benqi().call();
+            type = 'BENQI';
+          }catch(error){
+            type = 'ERC20';
+          }
         }
+
 
         return {
             controller,
@@ -440,8 +465,8 @@ async function getPoolShareAsUSD(poolContract) {
     const reserve0 = web3.utils.toBN(_reserve0);
     const reserve1 = web3.utils.toBN(_reserve1);
     const totalSupply = web3.utils.toBN(await poolContract.methods.totalSupply().call());
-
-    if (token0Address === WAVAX_ADDRESS) {
+    try {
+      if (token0Address === WAVAX_ADDRESS) {
         const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
         return reserve0.muln(2).mul(priceWAVAX).div(totalSupply);
     } else if (token1Address === WAVAX_ADDRESS) {
@@ -460,20 +485,36 @@ async function getPoolShareAsUSD(poolContract) {
         const priceJOE = await estimatePriceOfAsset(JOE_ADDRESS, 18);
         return reserve1.muln(2).mul(priceJOE).div(totalSupply);
     } else {
-        console.error(`Could not convert want address ${poolContract._address} to USD`);
-        return web3.utils.toBN('0');
+      const tokenContract = new web3.eth.Contract(ABI.ERC20, token0Address);
+      const tokenDecimals = await tokenContract.methods.decimals().call();
+      const priceToken = await estimatePriceOfAsset(token0Address, tokenDecimals);
+      return reserve0.muln(2).mul(priceToken).div(totalSupply);
     }
+    } catch (error) {
+      console.error(`Could not convert want address ${poolContract._address} to USD`);
+      console.error(error.message);
+      return web3.utils.toBN('0');
+    }
+
 }
 
 async function estimatePriceOfAsset(assetAddress, assetDecimals) {
-    const { ROUTER, ROUTE } = VALUATION[assetAddress];
+    const { ROUTER, ROUTE } = VALUATION(assetAddress);
     const destination = ROUTE[ROUTE.length - 1];
-
     const destinationContract = new web3.eth.Contract(ABI.ERC20, destination);
     const destinationDecimals = parseInt(await destinationContract.methods.decimals().call());
     const correction = web3.utils.toBN(destinationDecimals - assetDecimals);
 
     const routerContract = new web3.eth.Contract(ABI.UNI_V2_ROUTER, ROUTER);
     const [input, output] = await routerContract.methods.getAmountsOut('1' + '0'.repeat(assetDecimals), ROUTE).call();
-    return web3.utils.toBN(output).mul(web3.utils.toBN(10).pow(correction));
+    let price = web3.utils.toBN(output).mul(web3.utils.toBN(10).pow(correction));
+    
+    //calculate the value of the token through AVAX price
+    if(destination === WAVAX_ADDRESS){
+      const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+      const priceFloat = (price/1e18)*(priceWAVAX/1e18);
+      const priceWei = ethers.utils.parseUnits(roundDown(priceFloat,18),18);
+      price = web3.utils.toBN(priceWei.toString());
+    }
+    return price;
 }
