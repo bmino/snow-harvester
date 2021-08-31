@@ -9,6 +9,16 @@ const Util = {
         return Util.convertStringToFloat(bigNumber.toString(), decimals);
     },
 
+    roundDown(value, decimals = 18) {
+      const valueString = value.toString();
+      const integerString = valueString.split('.')[0];
+      const decimalsString = valueString.split('.')[1];
+      if (!decimalsString) {
+        return integerString
+      }
+      return `${integerString}.${decimalsString.slice(0, decimals)}`;
+    },
+
     convertStringToFloat(stringNumber, decimals) {
         const isNegative = stringNumber[0] === '-';
         const unsignedString = stringNumber.replace('-', '');

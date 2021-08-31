@@ -11,7 +11,11 @@ const {
     WAVAX_ADDRESS,
     PNG_ADDRESS,
     JOE_ADDRESS,
+    XJOE_ADDRESS,
+    BENQI_ADDRESS,
 } = require('../../config/Constants');
+const { roundDown } = require('./Util');
+const { ethers } = require('ethers');
 
 // Authenticate our wallet
 if (CONFIG.EXECUTION.ENABLED) {
@@ -70,23 +74,36 @@ async function initHarvests() {
     };
 
     return Promise.allSettled(snowglobes.map(async snowglobeAddress => {
-        const { controller, want, snowglobe, strategy } = await initializeContracts(WANTS.CONTROLLERS, snowglobeAddress);
+        const { controller, want, snowglobe, strategy, type, wantAddress } = await initializeContracts(WANTS.CONTROLLERS, snowglobeAddress);
         const snowglobeSymbol = await snowglobe.methods.symbol().call();
         const wantSymbol = await want.methods.symbol().call();
         const wantDecimals = parseInt(await want.methods.decimals().call());
-        const token0_addr = await want.methods.token0().call();
-        const token1_addr = await want.methods.token1().call();
-        const token0 = new web3.eth.Contract(ABI.ERC20, token0_addr) 
-        const token1 = new web3.eth.Contract(ABI.ERC20, token1_addr)
-        const token0_name = await token0.methods.symbol().call();
-        const token1_name = await token1.methods.symbol().call();
+        
+        let name;
+        switch(type){
+          case "LP":
+            const token0_addr = await want.methods.token0().call();
+            const token1_addr = await want.methods.token1().call();
+            const token0 = new web3.eth.Contract(ABI.ERC20, token0_addr) 
+            const token1 = new web3.eth.Contract(ABI.ERC20, token1_addr)
+            const token0_name = await token0.methods.symbol().call();
+            const token1_name = await token1.methods.symbol().call();
+            name = `${token0_name}-${token1_name}`;
+            break;
+          default:
+            name = wantSymbol;
+            break;
+        }
+
 
         return {
-            name: `${token0_name}-${token1_name}`,
+            name,
+            type,
             controller,
             want,
             wantSymbol,
             wantDecimals,
+            wantAddress,
             snowglobe,
             snowglobeSymbol,
             strategy,
@@ -97,19 +114,35 @@ async function initHarvests() {
 }
 
 async function addRequirements(harvests) {
-    const priceMap = {
-        'WAVAX': await estimatePriceOfAsset(WAVAX_ADDRESS, 18),
-        'PGL': await estimatePriceOfAsset(PNG_ADDRESS, 18),
-        'JLP': await estimatePriceOfAsset(JOE_ADDRESS, 18),
-    };
+    const priceMap = async (harvest) => {
+      switch(harvest.wantSymbol){
+        case 'WAVAX': return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+        case 'PGL': return await estimatePriceOfAsset(PNG_ADDRESS, 18);
+        case 'JLP': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
+      }
 
-    const rewardMap = {
-        'PGL': 'PNG',
-        'JLP': 'JOE',
+      switch(harvest.type){
+        case 'ERC20':
+          if(harvest.contractAddress == XJOE_ADDRESS){
+            return await estimatePriceOfAsset(JOE_ADDRESS, 18);
+          }
+        case 'BENQI':
+          return await estimatePriceOfAsset(BENQI_ADDRESS, 18);
+      }
+    }
+
+    const rewardMap = (wantSymbol) => {
+      switch(wantSymbol){
+        case 'PGL': return 'PNG';
+        case 'JLP': return 'JOE';
+        default:
+          return wantSymbol;
+      }
     };
 
     const addHarvestFees = async (harvest) => {
-        if (!priceMap[harvest.wantSymbol] || !rewardMap[harvest.wantSymbol]) {
+        if (!priceMap(harvest) || 
+          !rewardMap(harvest.wantSymbol)) {
             throw new Error(`Unknown symbol: ${harvest.wantSymbol}`);
         }
 
@@ -129,32 +162,42 @@ async function addRequirements(harvests) {
             ...harvest,
             harvestable,
             harvestOverride,
-            harvestSymbol: rewardMap[harvest.wantSymbol],
+            harvestSymbol: rewardMap(harvest.wantSymbol),
             treasuryFee: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
             treasuryMax: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryMax().call()),
             balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
             available: web3.utils.toBN(await harvest.snowglobe.methods.available().call()),
-            priceWAVAX: priceMap['WAVAX'],
-            rewardPrice: priceMap[harvest.wantSymbol],
-            priceWant: await getPoolShareAsUSD(harvest.want),
+            priceWAVAX: await priceMap({type:'ERC20', wantSymbol:'WAVAX'}),
+            rewardPrice: await priceMap(harvest),
+            priceWant: harvest.type === 'LP'? await getPoolShareAsUSD(harvest.want) : await estimatePriceOfAsset(harvest.wantAddress,harvest.wantDecimals),
         }
     };
-
-    return Promise.all(harvests.map(addHarvestFees))
-        .catch(err => {
-            console.error(`Error fetching requirements from strategy`);
-            throw err;
-        });
+    return await Promise.all(harvests.map(addHarvestFees))
+    .catch(err => {
+        console.error(`Error fetching requirements from strategy`);
+        throw err;
+    });
 }
 
 function addCalculations(harvests) {
-    const addHarvestGain = (harvest) => ({
+    const addHarvestGain = (harvest) => {
+      const gainWAVAX = harvest.harvestable.mul(harvest.rewardPrice).div(harvest.priceWAVAX);
+      const gainUSD = harvest.harvestable.mul(harvest.rewardPrice).div(Util.offset(18));
+      const ratio = harvest.balance.isZero() ? web3.utils.toBN(100) : harvest.available.muln(100).div(harvest.balance);
+      const usdPrice = ethers.utils.parseUnits(
+        roundDown(
+          (harvest.available/10**harvest.wantDecimals*harvest.priceWant/1e18),harvest.wantDecimals)
+            ,harvest.wantDecimals);
+      
+      const availableUSD = web3.utils.toBN(usdPrice.toString());
+      return {
+        gainWAVAX,
+        gainUSD,
+        ratio,
+        availableUSD,
         ...harvest,
-        gainWAVAX: harvest.harvestable.mul(harvest.rewardPrice).div(harvest.priceWAVAX),
-        gainUSD: harvest.harvestable.mul(harvest.rewardPrice).div(Util.offset(18)),
-        ratio: harvest.balance.isZero() ? web3.utils.toBN(100) : harvest.available.muln(100).div(harvest.balance),
-        availableUSD: harvest.available.mul(harvest.priceWant).div(Util.offset(harvest.wantDecimals)),
-    });
+      }
+    };
     return harvests.map(addHarvestGain);
 }
 
@@ -276,7 +319,7 @@ function logEarnResults({ results, harvests }) {
         if (value || !CONFIG.EXECUTION.ENABLED) {
             // Successfully called earn() or a test run
             console.log(`Snowglobe:   ${harvest.name} (${value?.to ?? harvest.snowglobe._address})`);
-            console.log(`Swept:       ${Util.displayBNasFloat(harvest.available, 18, 5)} ${harvest.wantSymbol} ($${Util.displayBNasFloat(harvest.availableUSD, 18)})`);
+            console.log(`Swept:       ${Util.displayBNasFloat(harvest.available, harvest.wantDecimals, 5)} ${harvest.wantSymbol} ($${Util.displayBNasFloat(harvest.availableUSD, 18)})`);
             console.log(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
         } else {
             // Failed to execute earn()
@@ -326,7 +369,7 @@ async function discordEarnUpdate({ results, harvests }) {
                 Thumbnail:Util.thumbnailLink(harvest.name),
                 URL:Util.cchainTransactionLink(value.transactionHash),
             };
-            const message = `**Swept:**  ${Util.displayBNasFloat(harvest.available, 18, 5)} **${harvest.wantSymbol}**\n`+
+            const message = `**Swept:**  ${Util.displayBNasFloat(harvest.available, harvest.wantDecimals, 5)} **${harvest.wantSymbol}**\n`+
                             `**Value**:  $${Util.displayBNasFloat(harvest.availableUSD, 18, 2)}`;
             embedObj.Description = message;
             DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
@@ -382,10 +425,32 @@ async function initializeContracts(controllerAddresses, snowglobeAddress) {
 
         if (controllerSnowglobeAddress !== snowglobeAddress) continue;
 
+        let type,poolToken = new web3.eth.Contract(ABI.UNI_V2_POOL, wantAddress);
+
+        try {
+          //test if this is an LP Token
+          await poolToken.methods.token1().call();
+          type = 'LP';
+        } catch (error) {
+          //not LP
+          poolToken = new web3.eth.Contract(ABI.ERC20, wantAddress);
+          try{
+            //test if this is from benqi
+            const strategyContract = new web3.eth.Contract(ABI.STRATEGY, strategyAddress);
+            await strategyContract.methods.benqi().call();
+            type = 'BENQI';
+          }catch(error){
+            type = 'ERC20';
+          }
+        }
+
+
         return {
             controller,
             snowglobe,
-            want: new web3.eth.Contract(ABI.UNI_V2_POOL, wantAddress),
+            want: poolToken,
+            wantAddress,
+            type,
             strategy: new web3.eth.Contract(ABI.STRATEGY, strategyAddress),
         };
     }
@@ -400,8 +465,8 @@ async function getPoolShareAsUSD(poolContract) {
     const reserve0 = web3.utils.toBN(_reserve0);
     const reserve1 = web3.utils.toBN(_reserve1);
     const totalSupply = web3.utils.toBN(await poolContract.methods.totalSupply().call());
-
-    if (token0Address === WAVAX_ADDRESS) {
+    try {
+      if (token0Address === WAVAX_ADDRESS) {
         const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
         return reserve0.muln(2).mul(priceWAVAX).div(totalSupply);
     } else if (token1Address === WAVAX_ADDRESS) {
@@ -420,20 +485,36 @@ async function getPoolShareAsUSD(poolContract) {
         const priceJOE = await estimatePriceOfAsset(JOE_ADDRESS, 18);
         return reserve1.muln(2).mul(priceJOE).div(totalSupply);
     } else {
-        console.error(`Could not convert want address ${poolContract._address} to USD`);
-        return web3.utils.toBN('0');
+      const tokenContract = new web3.eth.Contract(ABI.ERC20, token0Address);
+      const tokenDecimals = await tokenContract.methods.decimals().call();
+      const priceToken = await estimatePriceOfAsset(token0Address, tokenDecimals);
+      return reserve0.muln(2).mul(priceToken).div(totalSupply);
     }
+    } catch (error) {
+      console.error(`Could not convert want address ${poolContract._address} to USD`);
+      console.error(error.message);
+      return web3.utils.toBN('0');
+    }
+
 }
 
 async function estimatePriceOfAsset(assetAddress, assetDecimals) {
-    const { ROUTER, ROUTE } = VALUATION[assetAddress];
+    const { ROUTER, ROUTE } = VALUATION(assetAddress);
     const destination = ROUTE[ROUTE.length - 1];
-
     const destinationContract = new web3.eth.Contract(ABI.ERC20, destination);
     const destinationDecimals = parseInt(await destinationContract.methods.decimals().call());
     const correction = web3.utils.toBN(destinationDecimals - assetDecimals);
 
     const routerContract = new web3.eth.Contract(ABI.UNI_V2_ROUTER, ROUTER);
     const [input, output] = await routerContract.methods.getAmountsOut('1' + '0'.repeat(assetDecimals), ROUTE).call();
-    return web3.utils.toBN(output).mul(web3.utils.toBN(10).pow(correction));
+    let price = web3.utils.toBN(output).mul(web3.utils.toBN(10).pow(correction));
+    
+    //calculate the value of the token through AVAX price
+    if(destination === WAVAX_ADDRESS){
+      const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+      const priceFloat = (price/1e18)*(priceWAVAX/1e18);
+      const priceWei = ethers.utils.parseUnits(roundDown(priceFloat,18),18);
+      price = web3.utils.toBN(priceWei.toString());
+    }
+    return price;
 }
