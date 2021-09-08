@@ -116,33 +116,34 @@ async function initHarvests() {
 async function addRequirements(harvests) {
     const priceMap = async (harvest) => {
       switch(harvest.wantSymbol){
-        case 'WAVAX': return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+        case 'WAVAX': case 'PNG': return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
         case 'PGL': return await estimatePriceOfAsset(PNG_ADDRESS, 18);
-        case 'JLP': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
+        case 'JLP': case 'xJOE': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
+         
       }
-
+      
       switch(harvest.type){
-        case 'ERC20':
-          if(harvest.contractAddress == XJOE_ADDRESS){
-            return await estimatePriceOfAsset(JOE_ADDRESS, 18);
-          }
         case 'BENQI':
           return await estimatePriceOfAsset(BENQI_ADDRESS, 18);
       }
     }
 
-    const rewardMap = (wantSymbol) => {
-      switch(wantSymbol){
+    const rewardMap = (harvest) => {
+      if(harvest.type === 'BENQI'){
+        return 'QI';
+      }
+      switch(harvest.wantSymbol){
         case 'PGL': return 'PNG';
         case 'JLP': return 'JOE';
+        case 'PNG': return 'WAVAX';
         default:
-          return wantSymbol;
+          return harvest.wantSymbol;
       }
     };
 
     const addHarvestFees = async (harvest) => {
         if (!priceMap(harvest) || 
-          !rewardMap(harvest.wantSymbol)) {
+          !rewardMap(harvest)) {
             throw new Error(`Unknown symbol: ${harvest.wantSymbol}`);
         }
 
@@ -162,7 +163,7 @@ async function addRequirements(harvests) {
             ...harvest,
             harvestable,
             harvestOverride,
-            harvestSymbol: rewardMap(harvest.wantSymbol),
+            harvestSymbol: rewardMap(harvest),
             treasuryFee: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
             treasuryMax: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryMax().call()),
             balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
