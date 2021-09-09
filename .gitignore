@@ -87,4 +87,7 @@ typings/
 # DynamoDB Local files
 .dynamodb/
 
-config/Config.js
+
+# Local .terraform directories
+**/.terraform/*
+**/.terraform
