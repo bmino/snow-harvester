@@ -4,7 +4,7 @@ SERVICE_NAME=harvester
 ECS_CLUSTER=${env}-snowball-scheduled-task
 SERVICE_TAG=latest
 AWS_REGION=us-west-2
-ECR_REPO_URL=194059947554.dkr.ecr.us-west-2.amazonaws.com/${env}-${SERVICE_NAME}
+ECR_REPO_URL=672139136522.dkr.ecr.us-west-2.amazonaws.com/${env}-${SERVICE_NAME}
 
 all: build push
 
