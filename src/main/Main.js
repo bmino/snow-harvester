@@ -11,7 +11,6 @@ const {
     WAVAX_ADDRESS,
     PNG_ADDRESS,
     JOE_ADDRESS,
-    XJOE_ADDRESS,
     BENQI_ADDRESS,
 } = require('../../config/Constants');
 const { roundDown } = require('./Util');
@@ -28,11 +27,16 @@ if (CONFIG.EXECUTION.ENABLED) {
 let executionWindowCenter = Date.now();
 let executionDrift = 0;
 
-// Manually trigger first harvest cycle
+//if execution is enabled it makes a window, if not it just harvests in testmode
+const scheduledHarvest = 
+    CONFIG.EXECUTION.ENABLED && CONFIG.EXECUTION.CONTAINER_MODE 
+    ? scheduleNextHarvest 
+    : harvest;
+
 if (CONFIG.DISCORD.ENABLED){
-    DiscordBot.login(CONFIG.DISCORD.TOKEN).then(harvest);
-} else {
-    harvest();
+    DiscordBot.login(CONFIG.DISCORD.TOKEN).then(scheduledHarvest);
+}else{
+    scheduledHarvest();
 }
 
 
@@ -45,7 +49,13 @@ function harvest() {
         .then(addDecisions)
         .then(doHarvesting)
         .then(doEarning)
-        .then(scheduleNextHarvest)
+        .then(() => {
+          if(CONFIG.EXECUTION.CONTAINER_MODE){
+            process.exit();
+          }else{
+            scheduleNextHarvest();
+          }
+        })
         .catch(handleError);
 }
 
