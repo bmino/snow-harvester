@@ -12,6 +12,10 @@ locals {
         {
           name  = "SNOWBALL_KEY"
           value = data.aws_ssm_parameter.snowball_key.value
+        },
+         {
+          name  = "DISCORD_KEY"
+          value = data.aws_ssm_parameter.discord_key.value
         }
       ],
       logConfiguration = {
@@ -47,7 +51,7 @@ locals {
     },
     {
       name      = "log_router"
-      image     = "amazon/aws-for-fluent-bit:latest"
+      image     = "amazon/aws-for-fluent-bit:2.19.0"
       essential = true
       firelensConfiguration = {
         type = "fluentbit"

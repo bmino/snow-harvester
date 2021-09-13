@@ -20,6 +20,3 @@ push: test-envvars
 
 deploy: test-envvars
 	aws ecs --region $(AWS_REGION) update-service --cluster $(ECS_CLUSTER) --service ${SERVICE_NAME} --force-new-deployment
-
-zip:
-	cd ./src/functions && zip -r ./lambda.zip .

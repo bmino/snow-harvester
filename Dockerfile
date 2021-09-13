@@ -5,12 +5,12 @@ FROM node:15.14.0-alpine3.10
 WORKDIR '/app'
 # Initially copy only the dependencies json file
 COPY package.json .
-COPY config .
-COPY assets .
+COPY config/ /config/
+COPY assets/ /assets/
 # install dependencies 
 RUN npm install
 
 # Since we have everthing inside src we need to re-create it and copy its content.
-COPY ./src .
+COPY src/ .
 
-CMD ["node", "/main/Main.js"]
+CMD ["node", "main/Main.js"]
