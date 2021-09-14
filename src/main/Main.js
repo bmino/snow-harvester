@@ -12,6 +12,7 @@ const {
     PNG_ADDRESS,
     JOE_ADDRESS,
     BENQI_ADDRESS,
+    MAX_GAS
 } = require('../../config/Constants');
 const { roundDown } = require('./Util');
 const { ethers } = require('ethers');
@@ -218,10 +219,12 @@ function addCalculations(harvests) {
 async function addEarnTx(harvests) {
     const addTx = async (harvest) => {
         const earnTx = harvest.snowglobe.methods.earn();
+        const estGas = await earnTx.estimateGas({from: CONFIG.WALLET.ADDRESS});
+        const earnGas = estGas > MAX_GAS ? estGas : MAX_GAS;
         return {
             ...harvest,
             earnTx,
-            earnGas: await earnTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
+            earnGas,//await earnTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
         };
     };
     const handleRejection = (harvest, err) => {
@@ -235,10 +238,12 @@ async function addEarnTx(harvests) {
 async function addHarvestTx(harvests) {
     const addTx = async (harvest) => {
         const harvestTx = harvest.strategy.methods.harvest();
+        const estGas = await harvestTx.estimateGas({from: CONFIG.WALLET.ADDRESS});
+        const harvestGas = estGas > MAX_GAS ? estGas : MAX_GAS;
         return {
             ...harvest,
             harvestTx,
-            harvestGas: await harvestTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
+            harvestGas,//await harvestTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
         };
     };
     const handleRejection = (harvest, err) => {
@@ -253,10 +258,12 @@ async function addLeverageTx(harvests) {
     const addTx = async (harvest) => {
         if(harvest.type === 'BENQI'){
             const leverageTx = harvest.strategy.methods.leverageToMax();
+            const estGas = await leverageTx.estimateGas({from: CONFIG.WALLET.ADDRESS});
+            const leverageGas = estGas > MAX_GAS ? estGas : MAX_GAS;
             return {
                 ...harvest,
                 leverageTx,
-                leverageGas: await leverageTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
+                leverageGas, //await leverageTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
             }
         }else{
             return {...harvest};

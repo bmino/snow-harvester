@@ -10,6 +10,7 @@ const Constants = {
 
     PANGOLIN_ROUTER: '0xE54Ca86531e17Ef3616d22Ca28b0D458b6C89106',
     JOE_ROUTER: '0x60aE616a2155Ee3d9A68541Ba4544862310933d4',
+    MAX_GAS: 1000000
 };
 
 module.exports = Constants;
