@@ -12,6 +12,7 @@ const {
     PNG_ADDRESS,
     JOE_ADDRESS,
     BENQI_ADDRESS,
+    MAX_GAS
 } = require('../../config/Constants');
 const { roundDown } = require('./Util');
 const { ethers } = require('ethers');
@@ -46,9 +47,12 @@ function harvest() {
         .then(addCalculations)
         .then(addEarnTx)
         .then(addHarvestTx)
+        .then(addLeverageTx)
         .then(addDecisions)
         .then(doHarvesting)
         .then(doEarning)
+        .then(doLeveraging)
+        .then(sendDiscord)
         .then(() => {
           if(CONFIG.EXECUTION.CONTAINER_MODE){
             process.exit();
@@ -215,10 +219,12 @@ function addCalculations(harvests) {
 async function addEarnTx(harvests) {
     const addTx = async (harvest) => {
         const earnTx = harvest.snowglobe.methods.earn();
+        const estGas = await earnTx.estimateGas({from: CONFIG.WALLET.ADDRESS});
+        const earnGas = estGas > MAX_GAS ? estGas : MAX_GAS;
         return {
             ...harvest,
             earnTx,
-            earnGas: await earnTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
+            earnGas,//await earnTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
         };
     };
     const handleRejection = (harvest, err) => {
@@ -232,10 +238,12 @@ async function addEarnTx(harvests) {
 async function addHarvestTx(harvests) {
     const addTx = async (harvest) => {
         const harvestTx = harvest.strategy.methods.harvest();
+        const estGas = await harvestTx.estimateGas({from: CONFIG.WALLET.ADDRESS});
+        const harvestGas = estGas > MAX_GAS ? estGas : MAX_GAS;
         return {
             ...harvest,
             harvestTx,
-            harvestGas: await harvestTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
+            harvestGas,//await harvestTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
         };
     };
     const handleRejection = (harvest, err) => {
@@ -246,12 +254,37 @@ async function addHarvestTx(harvests) {
         .then(results => handleSettledPromises(results, harvests, handleRejection));
 }
 
+async function addLeverageTx(harvests) {
+    const addTx = async (harvest) => {
+        if(harvest.type === 'BENQI'){
+            const leverageTx = harvest.strategy.methods.leverageToMax();
+            const estGas = await leverageTx.estimateGas({from: CONFIG.WALLET.ADDRESS});
+            const leverageGas = estGas > MAX_GAS ? estGas : MAX_GAS;
+            return {
+                ...harvest,
+                leverageTx,
+                leverageGas, //await leverageTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
+            }
+        }else{
+            return {...harvest};
+        }
+    }
+
+  const handleRejection = (harvest, err) => {
+      console.error(`Skipping ${harvest.name} due to leverageToMax() error (strategy: ${Util.cchainAddressLink(harvest.strategy._address)})`);
+      console.error(err);
+  };
+  return Promise.allSettled(harvests.map(addTx))
+      .then(results => handleSettledPromises(results, harvests, handleRejection));
+}
+
 function addDecisions(harvests) {
     const addHarvestDecision = (harvest) => {
         console.log(`Determining execution decisions for ${harvest.name}`);
         const cost = web3.utils.toBN(harvest.harvestGas).mul(web3.utils.toBN(harvest.gasPrice));
         const gain = harvest.gainWAVAX.mul(harvest.treasuryFee).div(harvest.treasuryMax);
         const TWO_HUNDRED_USD = web3.utils.toBN('200' + '0'.repeat(18));
+        const ONE_HUNDRED_THOUSAND_USD = web3.utils.toBN('100000' + '0'.repeat(18));
         const harvestDecision = cost.lt(gain) || harvest.harvestOverride;
         if (harvest.harvestOverride && !cost.lt(gain)) {
             console.log(`Harvest decision overridden by flag!`);
@@ -259,10 +292,15 @@ function addDecisions(harvests) {
         console.log(`Harvest decision: ${harvestDecision}`);
         const earnDecision = harvest.ratio.gten(1) && harvest.availableUSD.gt(TWO_HUNDRED_USD);
         console.log(`Earn decision: ${earnDecision}`);
+        const leverageDecision = harvest.ratio.gten(1) && 
+                                 harvest.availableUSD.gt(ONE_HUNDRED_THOUSAND_USD) &&
+                                 harvest.type === 'BENQI';
+        console.log(`Leverage decision: ${leverageDecision}`);
         return {
             ...harvest,
             harvestDecision,
             earnDecision,
+            leverageDecision
         };
     };
     return harvests.map(addHarvestDecision);
@@ -279,11 +317,13 @@ async function doHarvesting(harvests) {
 
     const results = await Promise.allSettled(harvests.map(executeHarvestTx));
     logHarvestingResults({ results, harvests });
-    await discordHarvestUpdate({ results, harvests });
-    return harvests;
+    var payload = {harvests, results:{
+      harvest:results
+    }};
+    return payload;
 }
 
-async function doEarning(harvests) {
+async function doEarning(payload) {
     await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning earn() calls for the provider to sync the nonce
 
     let nonce = await web3.eth.getTransactionCount(CONFIG.WALLET.ADDRESS);
@@ -294,10 +334,40 @@ async function doEarning(harvests) {
         return await harvest.earnTx.send({ from: CONFIG.WALLET.ADDRESS, gas: harvest.earnGas, gasPrice: harvest.gasPrice, nonce: nonce++ });
     };
 
-    const results = await Promise.allSettled(harvests.map(executeEarnTx));
-    logEarnResults({ results, harvests });
-    await discordEarnUpdate({ results, harvests });
-    return harvests;
+    const results = await Promise.allSettled(payload.harvests.map(executeEarnTx));
+    logEarnResults({ results, harvests: payload.harvests });
+    //let the discord messages to the finish
+    payload.results.earn = results;
+
+    return payload;
+}
+
+async function doLeveraging(payload){
+  await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning leverageToMax() calls for the provider to sync the nonce
+
+  let nonce = await web3.eth.getTransactionCount(CONFIG.WALLET.ADDRESS);
+  const executeLeverageTx = async (harvest) => {
+      if (!harvest.leverageDecision) return null;
+      if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would have leveraged ${harvest.snowglobe._address}. Set CONFIG.EXECUTION.ENABLED to enable leveraging`);
+      console.log(`Leveraging snowglobe address: ${harvest.snowglobe._address} (${harvest.name}) ...`);
+      return await harvest.leverageTx.send({ from: CONFIG.WALLET.ADDRESS, gas: harvest.leverageGas, gasPrice: harvest.gasPrice, nonce: nonce++ });
+  };
+
+  const results = await Promise.allSettled(payload.harvests.map(executeLeverageTx));
+  logLeverageResults({ results, harvests: payload.harvests });
+  //let the discord messages to the finish
+  payload.results.leverage = results;
+
+  return payload;
+}
+
+async function sendDiscord(payload){
+    //we need to await for our discord calls when running at container mode, and we can't let it await
+    //between transactions because it opens margin for frontrunning
+
+    await discordHarvestUpdate({ results:payload.results.harvest, harvests:payload.harvests });
+    await discordEarnUpdate({ results:payload.results.earn, harvests:payload.harvests });
+    await discordLeverageUpdate({ results:payload.results.leverage, harvests:payload.harvests });
 }
 
 function logHarvestingResults({ results, harvests }) {
@@ -342,6 +412,27 @@ function logEarnResults({ results, harvests }) {
     return { results, harvests };
 }
 
+function logLeverageResults({ results, harvests }) {
+  for (let i = 0; i < results.length; i++) {
+      const harvest = harvests[i];
+      if (!harvest.leverageDecision) continue;
+      const {reason, value} = results[i];
+      console.log(`--------------------------------------------------------------------`);
+      if (value || !CONFIG.EXECUTION.ENABLED) {
+          // Successfully called leverageToMax() or a test run
+          console.log(`Snowglobe:   ${harvest.name} (${value?.to ?? harvest.snowglobe._address})`);
+          console.log(`Leveraged:   ${Util.displayBNasFloat(harvest.available, harvest.wantDecimals, 5)} ${harvest.wantSymbol} ($${Util.displayBNasFloat(harvest.availableUSD, 18)})`);
+          console.log(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
+      } else {
+          // Failed to execute leverageToMax()
+          console.error(`Failed to leverage for snowglobe ${value?.to ?? harvest.snowglobe._address} (${harvest.name})`);
+          console.error(reason);
+      }
+  }
+  console.log(`--------------------------------------------------------------------`);
+  return { results, harvests };
+}
+
 async function discordHarvestUpdate({ results, harvests }) {
     if (!CONFIG.EXECUTION.ENABLED) return console.log(`Discord notifications are disabled while in test mode`);
     if (!CONFIG.DISCORD.ENABLED) return console.log(`Did not notify discord. Set CONFIG.DISCORD.ENABLED to send notifications to #harvests`);
@@ -360,7 +451,7 @@ async function discordHarvestUpdate({ results, harvests }) {
             const message = `**Reinvested:**  ${harvest.harvestOverride ? 'Unknown' : Util.displayBNasFloat(harvest.harvestable, 18, 2)} **${harvest.harvestSymbol}**\n`+
                             `**Value**:  $${harvest.harvestOverride ? '?.??' : Util.displayBNasFloat(harvest.gainUSD, 18, 2)}`;
             embedObj.Description = message;
-            DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
+            await DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
         }
     }
 }
@@ -383,9 +474,32 @@ async function discordEarnUpdate({ results, harvests }) {
             const message = `**Swept:**  ${Util.displayBNasFloat(harvest.available, harvest.wantDecimals, 5)} **${harvest.wantSymbol}**\n`+
                             `**Value**:  $${Util.displayBNasFloat(harvest.availableUSD, 18, 2)}`;
             embedObj.Description = message;
-            DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
+            await DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
         }
     }
+}
+
+async function discordLeverageUpdate({ results, harvests }) {
+  if (!CONFIG.EXECUTION.ENABLED) return console.log(`Discord notifications are disabled while in test mode`);
+  if (!CONFIG.DISCORD.ENABLED) return console.log(`Did not notify discord. Set CONFIG.DISCORD.ENABLED to send notifications to #harvests`);
+
+  for (let i = 0; i< results.length; i++) {
+      const {reason, value} = results[i];
+      const harvest = harvests[i];
+      if (!harvest.leverageDecision) continue;
+      if (value) {
+          const embedObj = {
+              Color:'0x00aaff',
+              Title:`Snowglobe: ${harvest.name}`,
+              Thumbnail:Util.thumbnailLink(harvest.name),
+              URL:Util.cchainTransactionLink(value.transactionHash),
+          };
+          const message = `**Leveraged:**  ${Util.displayBNasFloat(harvest.available, harvest.wantDecimals, 5)} **${harvest.wantSymbol}**\n`+
+                          `**Value**:  $${Util.displayBNasFloat(harvest.availableUSD, 18, 2)}`;
+          embedObj.Description = message;
+          await DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
+      }
+  }
 }
 
 function handleError(err) {
