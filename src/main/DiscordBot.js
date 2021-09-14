@@ -34,9 +34,9 @@ const DiscordBot = {
         return embed;
     },
 
-    sendMessage(message, channelId) {
+    async sendMessage(message, channelId) {
         console.log('DiscordBot: Sending message ...');
-        DiscordBot.client.channels.cache.get(channelId).send(message);
+        await DiscordBot.client.channels.cache.get(channelId).send(message);
     },
 
 };
