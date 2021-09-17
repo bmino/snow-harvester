@@ -257,17 +257,24 @@ async function addHarvestTx(harvests) {
 async function addLeverageTx(harvests) {
     const addTx = async (harvest) => {
         if(harvest.type === 'BENQI'){
-            const leverageTx = harvest.strategy.methods.leverageToMax();
-            const estGas = await leverageTx.estimateGas({from: CONFIG.WALLET.ADDRESS});
-            const leverageGas = estGas > MAX_GAS ? estGas : MAX_GAS;
-            return {
-                ...harvest,
-                leverageTx,
-                leverageGas, //await leverageTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
+            try {
+                await harvest.strategy.methods.getMaxLeverage().call();
+                const leverageTx = harvest.strategy.methods.leverageToMax();
+                const estGas = await leverageTx.estimateGas({from: CONFIG.WALLET.ADDRESS});
+                const leverageGas = estGas > MAX_GAS ? estGas : MAX_GAS;
+                return {
+                    ...harvest,
+                    leverageTx,
+                    leverageGas, //await leverageTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
+                }
+            } catch (error) {
+                console.log(error.message);
+                //cant be leveraged
+                return {...harvest};
             }
-        }else{
-            return {...harvest};
-        }
+          }else{
+              return {...harvest};
+          }
     }
 
   const handleRejection = (harvest, err) => {
@@ -294,7 +301,8 @@ function addDecisions(harvests) {
         console.log(`Earn decision: ${earnDecision}`);
         const leverageDecision = harvest.ratio.gten(1) && 
                                  harvest.availableUSD.gt(ONE_HUNDRED_THOUSAND_USD) &&
-                                 harvest.type === 'BENQI';
+                                 harvest.type === 'BENQI' &&
+                                 harvest.leverageTx;
         console.log(`Leverage decision: ${leverageDecision}`);
         return {
             ...harvest,
