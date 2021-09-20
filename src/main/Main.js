@@ -199,12 +199,8 @@ function addCalculations(harvests) {
       const gainWAVAX = harvest.harvestable.mul(harvest.rewardPrice).div(harvest.priceWAVAX);
       const gainUSD = harvest.harvestable.mul(harvest.rewardPrice).div(Util.offset(18));
       const ratio = harvest.balance.isZero() ? web3.utils.toBN(100) : harvest.available.muln(100).div(harvest.balance);
-      const usdPrice = ethers.utils.parseUnits(
-        roundDown(
-          (harvest.available/10**harvest.wantDecimals*harvest.priceWant/1e18),harvest.wantDecimals)
-            ,harvest.wantDecimals);
-      
-      const availableUSD = web3.utils.toBN(usdPrice.toString());
+      const availableUSD = harvest.available.mul(harvest.priceWant).div(Util.offset(18));
+    
       return {
         gainWAVAX,
         gainUSD,
@@ -291,7 +287,7 @@ function addDecisions(harvests) {
         const cost = web3.utils.toBN(harvest.harvestGas).mul(web3.utils.toBN(harvest.gasPrice));
         const gain = harvest.gainWAVAX.mul(harvest.treasuryFee).div(harvest.treasuryMax);
         const TWO_HUNDRED_USD = web3.utils.toBN('200' + '0'.repeat(18));
-        const ONE_HUNDRED_THOUSAND_USD = web3.utils.toBN('100000' + '0'.repeat(18));
+        const SEVENTY_FIVE_THOUSAND_USD = web3.utils.toBN('75000' + '0'.repeat(18));
         const harvestDecision = cost.lt(gain) || harvest.harvestOverride;
         if (harvest.harvestOverride && !cost.lt(gain)) {
             console.log(`Harvest decision overridden by flag!`);
@@ -300,7 +296,7 @@ function addDecisions(harvests) {
         const earnDecision = harvest.ratio.gten(1) && harvest.availableUSD.gt(TWO_HUNDRED_USD);
         console.log(`Earn decision: ${earnDecision}`);
         const leverageDecision = harvest.ratio.gten(1) && 
-                                 harvest.availableUSD.gt(ONE_HUNDRED_THOUSAND_USD) &&
+                                 harvest.availableUSD.gt(SEVENTY_FIVE_THOUSAND_USD) &&
                                  harvest.type === 'BENQI' &&
                                  harvest.leverageTx;
         console.log(`Leverage decision: ${leverageDecision}`);
