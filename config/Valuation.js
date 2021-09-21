@@ -24,7 +24,7 @@ const Valuation = (assetAddress) => {
         }
       default:
         return {
-          ROUTER: PANGOLIN_ROUTER,
+          ROUTER: JOE_ROUTER,
           ROUTE: [assetAddress, WAVAX_ADDRESS],
         }
     }

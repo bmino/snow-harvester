@@ -614,10 +614,17 @@ async function getPoolShareAsUSD(poolContract) {
         const priceJOE = await estimatePriceOfAsset(JOE_ADDRESS, 18);
         return reserve1.muln(2).mul(priceJOE).div(totalSupply);
     } else {
-      const tokenContract = new web3.eth.Contract(ABI.ERC20, token0Address);
-      const tokenDecimals = await tokenContract.methods.decimals().call();
-      const priceToken = await estimatePriceOfAsset(token0Address, tokenDecimals);
-      return reserve0.muln(2).mul(priceToken).div(totalSupply);
+      try {
+        const token0Contract = new web3.eth.Contract(ABI.ERC20, token0Address);
+        const token0Decimals = await token0Contract.methods.decimals().call();
+        const priceToken0 = await estimatePriceOfAsset(token0Address, token0Decimals);
+        return reserve0.muln(2).mul(priceToken0).div(totalSupply);
+      } catch (error) {
+        const token1Contract = new web3.eth.Contract(ABI.ERC20, token1Address);
+        const token1Decimals = await token1Contract.methods.decimals().call();
+        const priceToken1 = await estimatePriceOfAsset(token1Address, token1Decimals);
+        return reserve1.muln(2).mul(priceToken1).div(totalSupply);
+      }
     }
     } catch (error) {
       console.error(`Could not convert want address ${poolContract._address} to USD`);
