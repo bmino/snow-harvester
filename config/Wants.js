@@ -14,6 +14,7 @@ const Wants = {
 
   CONTROLLERS: [
     '0xACc69DEeF119AB5bBf14e6Aaf0536eAFB3D6e046', // second deployment (must come first to supersede other controller
+    '0x425A863762BBf24A986d8EaE2A367cb514591C6F', // AAVE Controller
     '0xf7B8D9f8a82a7a6dd448398aFC5c77744Bd6cb85', // first deployment
   ],
   

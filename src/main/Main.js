@@ -138,20 +138,24 @@ async function addRequirements(harvests) {
       
       switch(harvest.type){
         case 'BENQI':
-          return await estimatePriceOfAsset(BENQI_ADDRESS, 18);
+            return await estimatePriceOfAsset(BENQI_ADDRESS, 18);
+        case 'AAVE':
+            return await estimatePriceOfAsset(WAVAX_ADDRESS, 18); 
       }
     }
 
     const rewardMap = (harvest) => {
-      if(harvest.type === 'BENQI'){
-        return 'QI';
-      }
-      switch(harvest.wantSymbol){
-        case 'PGL': return 'PNG';
-        case 'JLP': return 'JOE';
-        case 'PNG': return 'WAVAX';
-        default:
-          return harvest.wantSymbol;
+        switch(harvest.type){
+            case 'BENQI':
+                return "QI";
+            case 'AAVE':
+                return "WAVAX"; 
+          }
+        switch(harvest.wantSymbol){
+            case 'PGL': return 'PNG';
+            case 'JLP': return 'JOE';
+            case 'PNG': return 'WAVAX';
+            default: return harvest.wantSymbol;
       }
     };
 
@@ -165,7 +169,12 @@ async function addRequirements(harvests) {
         let harvestOverride = false;
 
         try {
-            harvestable = web3.utils.toBN(await harvest.strategy.methods.getHarvestable().call());
+            if(harvest.type === "AAVE"){
+                harvestable = web3.utils.toBN(await harvest.strategy.methods.getWavaxAccrued().call());
+            } else {
+                harvestable = web3.utils.toBN(await harvest.strategy.methods.getHarvestable().call());
+            }
+           
         } catch(err) {
             // This fails for certain strategies where the strategy lacks a `rewarder`
             // Assuming the harvest should happen for now
@@ -297,7 +306,7 @@ function addDecisions(harvests) {
         console.log(`Earn decision: ${earnDecision}`);
         const leverageDecision = harvest.ratio.gten(1) && 
                                  harvest.availableUSD.gt(SEVENTY_FIVE_THOUSAND_USD) &&
-                                 harvest.type === 'BENQI' &&
+                                 (harvest.type === 'BENQI' || harvest.type === 'AAVE') &&
                                  harvest.leverageTx;
         console.log(`Leverage decision: ${leverageDecision}`);
         return {
@@ -555,6 +564,7 @@ async function initializeContracts(controllerAddresses, snowglobeAddress) {
         if (controllerSnowglobeAddress !== snowglobeAddress) continue;
 
         let type,poolToken = new web3.eth.Contract(ABI.UNI_V2_POOL, wantAddress);
+        const strategyContract = new web3.eth.Contract(ABI.STRATEGY, strategyAddress);
 
         try {
           //test if this is an LP Token
@@ -565,11 +575,16 @@ async function initializeContracts(controllerAddresses, snowglobeAddress) {
           poolToken = new web3.eth.Contract(ABI.ERC20, wantAddress);
           try{
             //test if this is from benqi
-            const strategyContract = new web3.eth.Contract(ABI.STRATEGY, strategyAddress);
             await strategyContract.methods.benqi().call();
             type = 'BENQI';
           }catch(error){
-            type = 'ERC20';
+            //AAVE pool
+            try {
+                await strategyContract.methods.getWavaxAccrued().call();
+                type = 'AAVE';
+            } catch (error) {
+                type = 'ERC20';
+            }
           }
         }
 
@@ -580,7 +595,7 @@ async function initializeContracts(controllerAddresses, snowglobeAddress) {
             want: poolToken,
             wantAddress,
             type,
-            strategy: new web3.eth.Contract(ABI.STRATEGY, strategyAddress),
+            strategy: strategyContract,
         };
     }
 
