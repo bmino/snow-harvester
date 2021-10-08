@@ -261,7 +261,7 @@ async function addHarvestTx(harvests) {
 
 async function addLeverageTx(harvests) {
     const addTx = async (harvest) => {
-        if(harvest.type === 'BENQI'){
+        if(harvest.type === 'BENQI' || harvest.type === 'AAVE'){
             try {
                 await harvest.strategy.methods.getMaxLeverage().call();
                 const leverageTx = harvest.strategy.methods.leverageToMax();
