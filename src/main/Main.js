@@ -79,6 +79,10 @@ async function getSnowglobes() {
 
 async function initHarvests() {
     const gasPrice = await web3.eth.getGasPrice();
+    //we shouldnt harvest if the gas price is too high
+    if(gasPrice > MAX_GAS){
+        throw new Error("Gas too High");
+    }
 
     const snowglobes = await getSnowglobes();
 
@@ -273,6 +277,7 @@ async function addLeverageTx(harvests) {
                     leverageGas, //await leverageTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
                 }
             } catch (error) {
+                console.log(harvest.name);
                 console.log(error.message);
                 //cant be leveraged
                 return {...harvest};
