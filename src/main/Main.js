@@ -187,11 +187,21 @@ async function addRequirements(harvests) {
             harvestOverride = true;
         }
 
+        var keep,keepMax;
+        try{
+            keep = web3.utils.toBN(await harvest.strategy.methods.keep().call());
+            keepMax = web3.utils.toBN(await harvest.strategy.methods.keepMax().call());
+        }catch(error){
+            //old strategy
+        }
+
         return {
             ...harvest,
             harvestable,
             harvestOverride,
             harvestSymbol: rewardMap(harvest),
+            keep,
+            keepMax,
             treasuryFee: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
             treasuryMax: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryMax().call()),
             balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
@@ -300,7 +310,13 @@ function addDecisions(harvests) {
     const addHarvestDecision = (harvest) => {
         console.log(`Determining execution decisions for ${harvest.name}`);
         const cost = web3.utils.toBN(harvest.harvestGas).mul(web3.utils.toBN(harvest.gasPrice));
-        const gain = harvest.gainWAVAX.mul(harvest.treasuryFee).div(harvest.treasuryMax);
+        var gain;
+        if(harvest.treasuryFee.gt(web3.utils.toBN(0))){
+            gain = harvest.gainWAVAX.mul(harvest.treasuryFee).div(harvest.treasuryMax);
+        }else{
+            gain = harvest.gainWAVAX.mul(harvest.keep).div(harvest.keepMax);
+        }
+
         const TWO_HUNDRED_USD = web3.utils.toBN('200' + '0'.repeat(18));
         const SEVENTY_FIVE_THOUSAND_USD = web3.utils.toBN('75000' + '0'.repeat(18));
         const harvestDecision = cost.lt(gain) || harvest.harvestOverride;
@@ -593,7 +609,6 @@ async function initializeContracts(controllerAddresses, snowglobeAddress) {
             }
           }
         }
-
 
         return {
             controller,
