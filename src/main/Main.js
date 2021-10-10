@@ -12,7 +12,9 @@ const {
     PNG_ADDRESS,
     JOE_ADDRESS,
     BENQI_ADDRESS,
-    MAX_GAS_LIMIT,
+    MAX_GAS_LIMIT_EARN,
+    MAX_GAS_LIMIT_LEV,
+    MAX_GAS_LIMIT_HARV,
     MAX_GAS_PRICE
 } = require('../../config/Constants');
 const { roundDown } = require('./Util');
@@ -240,7 +242,7 @@ async function addEarnTx(harvests) {
     const addTx = async (harvest) => {
         const earnTx = harvest.snowglobe.methods.earn();
         const estGas = await earnTx.estimateGas({from: CONFIG.WALLET.ADDRESS});
-        const earnGas = estGas > MAX_GAS_LIMIT ? estGas : MAX_GAS_LIMIT;
+        const earnGas = estGas > MAX_GAS_LIMIT_EARN ? estGas : MAX_GAS_LIMIT_EARN;
         return {
             ...harvest,
             earnTx,
@@ -259,7 +261,7 @@ async function addHarvestTx(harvests) {
     const addTx = async (harvest) => {
         const harvestTx = harvest.strategy.methods.harvest();
         const estGas = await harvestTx.estimateGas({from: CONFIG.WALLET.ADDRESS});
-        const harvestGas = estGas > MAX_GAS_LIMIT ? estGas : MAX_GAS_LIMIT;
+        const harvestGas = estGas > MAX_GAS_LIMIT_HARV ? estGas : MAX_GAS_LIMIT_HARV;
         return {
             ...harvest,
             harvestTx,
@@ -281,7 +283,7 @@ async function addLeverageTx(harvests) {
                 await harvest.strategy.methods.getMaxLeverage().call();
                 const leverageTx = harvest.strategy.methods.leverageToMax();
                 const estGas = await leverageTx.estimateGas({from: CONFIG.WALLET.ADDRESS});
-                const leverageGas = estGas > MAX_GAS_LIMIT ? estGas : MAX_GAS_LIMIT;
+                const leverageGas = estGas > MAX_GAS_LIMIT_LEV ? estGas : MAX_GAS_LIMIT_LEV;
                 return {
                     ...harvest,
                     leverageTx,
