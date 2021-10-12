@@ -146,6 +146,8 @@ async function addRequirements(harvests) {
       switch(harvest.type){
         case 'BENQI':
             return await estimatePriceOfAsset(BENQI_ADDRESS, 18);
+        case 'BANKER':
+            return await estimatePriceOfAsset(JOE_ADDRESS, 18);
         case 'AAVE':
             return await estimatePriceOfAsset(WAVAX_ADDRESS, 18); 
       }
@@ -157,6 +159,8 @@ async function addRequirements(harvests) {
                 return "QI";
             case 'AAVE':
                 return "WAVAX"; 
+            case 'BANKER':
+                return "JOE"; 
           }
         switch(harvest.wantSymbol){
             case 'PGL': return 'PNG';
@@ -196,7 +200,6 @@ async function addRequirements(harvests) {
         }catch(error){
             //old strategy
         }
-
         return {
             ...harvest,
             harvestable,
@@ -278,7 +281,7 @@ async function addHarvestTx(harvests) {
 
 async function addLeverageTx(harvests) {
     const addTx = async (harvest) => {
-        if(harvest.type === 'BENQI' || harvest.type === 'AAVE'){
+        if(harvest.type === 'BENQI' || harvest.type === 'AAVE' || harvest.type === 'BANKER'){
             try {
                 await harvest.strategy.methods.getMaxLeverage().call();
                 const leverageTx = harvest.strategy.methods.leverageToMax();
@@ -318,7 +321,6 @@ function addDecisions(harvests) {
         }else{
             gain = harvest.gainWAVAX.mul(harvest.keep).div(harvest.keepMax);
         }
-
         const TWO_HUNDRED_USD = web3.utils.toBN('200' + '0'.repeat(18));
         const SEVENTY_FIVE_THOUSAND_USD = web3.utils.toBN('75000' + '0'.repeat(18));
         const harvestDecision = cost.lt(gain) || harvest.harvestOverride;
@@ -330,8 +332,8 @@ function addDecisions(harvests) {
         console.log(`Earn decision: ${earnDecision}`);
         const leverageDecision = harvest.ratio.gten(1) && 
                                  harvest.availableUSD.gt(SEVENTY_FIVE_THOUSAND_USD) &&
-                                 (harvest.type === 'BENQI' || harvest.type === 'AAVE') &&
-                                 harvest.leverageTx;
+                                 (harvest.type === 'BENQI' || harvest.type === 'AAVE' || 
+                                 harvest.type === 'BANKER') && harvest.leverageTx;
         console.log(`Leverage decision: ${leverageDecision}`);
         return {
             ...harvest,
@@ -607,8 +609,14 @@ async function initializeContracts(controllerAddresses, snowglobeAddress) {
                 await strategyContract.methods.getWavaxAccrued().call();
                 type = 'AAVE';
             } catch (error) {
-                type = 'ERC20';
-            }
+                try{
+                    //test if this is from banker joe
+                    await strategyContract.methods.jToken().call();
+                    type = 'BANKER';
+                  }catch(error){
+                    type = 'ERC20';
+                  }
+                }
           }
         }
 
