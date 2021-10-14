@@ -323,7 +323,8 @@ function addDecisions(harvests) {
         }
         const TWO_HUNDRED_USD = web3.utils.toBN('200' + '0'.repeat(18));
         const SEVENTY_FIVE_THOUSAND_USD = web3.utils.toBN('75000' + '0'.repeat(18));
-        const harvestDecision = cost.lt(gain) || harvest.harvestOverride;
+        const harvestDecision = cost.lt(gain) || harvest.harvestOverride 
+            || harvest.type === "BANKER" || harvest.type === "AAVE" || harvest.type === "BENQI";
         if (harvest.harvestOverride && !cost.lt(gain)) {
             console.log(`Harvest decision overridden by flag!`);
         }
