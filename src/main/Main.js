@@ -1,10 +1,8 @@
 const CONFIG = require('../../config/Config');
 const ABI = require('../../config/abi.json');
-const Web3 = require('web3');
-const web3 = new Web3(new Web3.providers.HttpProvider('https://api.avax.network/ext/bc/C/rpc'));
 const Util = require('./Util');
-const DiscordBot = require('./DiscordBot');
 const WANTS = require('../../config/Wants');
+const axios = require('axios');
 const VALUATION = require('../../config/Valuation');
 const {
     ZERO_ADDRESS,
@@ -15,14 +13,16 @@ const {
     MAX_GAS_LIMIT_EARN,
     MAX_GAS_LIMIT_LEV,
     MAX_GAS_LIMIT_HARV,
-    MAX_GAS_PRICE
+    MAX_GAS_PRICE,
+    RPC_LINK
 } = require('../../config/Constants');
-const { roundDown } = require('./Util');
 const { ethers } = require('ethers');
+
+const provider = new ethers.providers.StaticJsonRpcProvider(RPC_LINK);
+const signer = new ethers.Wallet(CONFIG.WALLET.KEY, provider);
 
 // Authenticate our wallet
 if (CONFIG.EXECUTION.ENABLED) {
-    web3.eth.accounts.wallet.add(CONFIG.WALLET.KEY);
     console.log(`WARNING!! Test mode is disabled. Real harvesting might begin!!`);
 }
 
@@ -32,17 +32,12 @@ let executionWindowCenter = Date.now();
 let executionDrift = 0;
 
 //if execution is enabled it makes a window, if not it just harvests in testmode
-const scheduledHarvest = 
-    CONFIG.EXECUTION.ENABLED && CONFIG.EXECUTION.CONTAINER_MODE 
-    ? scheduleNextHarvest 
-    : harvest;
+const scheduledHarvest =
+    CONFIG.EXECUTION.ENABLED && CONFIG.EXECUTION.CONTAINER_MODE
+        ? scheduleNextHarvest
+        : harvest;
 
-if (CONFIG.DISCORD.ENABLED){
-    DiscordBot.login(CONFIG.DISCORD.TOKEN).then(scheduledHarvest);
-}else{
-    scheduledHarvest();
-}
-
+scheduledHarvest();
 
 function harvest() {
     initHarvests()
@@ -51,25 +46,27 @@ function harvest() {
         .then(addEarnTx)
         .then(addHarvestTx)
         .then(addLeverageTx)
+        .then(addDeleverageTx)
         .then(addDecisions)
         .then(doHarvesting)
         .then(doEarning)
         .then(doLeveraging)
+        .then(doDeleveraging)
         .then(sendDiscord)
         .then(() => {
-          if(CONFIG.EXECUTION.CONTAINER_MODE){
-            process.exit();
-          }else{
-            scheduleNextHarvest();
-          }
+            if (CONFIG.EXECUTION.CONTAINER_MODE) {
+                process.exit();
+            } else {
+                scheduleNextHarvest();
+            }
         })
         .catch(handleError);
 }
 
 async function getSnowglobes() {
-    const gauge_proxy = new web3.eth.Contract(ABI.GAUGE_PROXY, WANTS.GAUGE_PROXY_ADDRESS);
+    const gauge_proxy = new ethers.Contract(WANTS.GAUGE_PROXY_ADDRESS, ABI.GAUGE_PROXY, signer);
 
-    const pools = await gauge_proxy.methods.tokens().call();
+    const pools = await gauge_proxy.tokens();
 
     return [
         // remove omitted overrides
@@ -81,9 +78,9 @@ async function getSnowglobes() {
 }
 
 async function initHarvests() {
-    const gasPrice = await web3.eth.getGasPrice();
+    const gasPrice = await provider.getGasPrice();
     //we shouldnt harvest if the gas price is too high
-    if(gasPrice > MAX_GAS_PRICE){
+    if (gasPrice > MAX_GAS_PRICE) {
         throw new Error("Gas price too High");
     }
 
@@ -96,26 +93,25 @@ async function initHarvests() {
 
     return Promise.allSettled(snowglobes.map(async snowglobeAddress => {
         const { controller, want, snowglobe, strategy, type, wantAddress } = await initializeContracts(WANTS.CONTROLLERS, snowglobeAddress);
-        const snowglobeSymbol = await snowglobe.methods.symbol().call();
-        const wantSymbol = await want.methods.symbol().call();
-        const wantDecimals = parseInt(await want.methods.decimals().call());
-        
-        let name;
-        switch(type){
-          case "LP":
-            const token0_addr = await want.methods.token0().call();
-            const token1_addr = await want.methods.token1().call();
-            const token0 = new web3.eth.Contract(ABI.ERC20, token0_addr) 
-            const token1 = new web3.eth.Contract(ABI.ERC20, token1_addr)
-            const token0_name = await token0.methods.symbol().call();
-            const token1_name = await token1.methods.symbol().call();
-            name = `${token0_name}-${token1_name}`;
-            break;
-          default:
-            name = wantSymbol;
-            break;
-        }
+        const snowglobeSymbol = await snowglobe.symbol();
+        const wantSymbol = await want.symbol();
+        const wantDecimals = parseInt(await want.decimals());
 
+        let name;
+        switch (type) {
+            case "LP":
+                const token0_addr = await want.token0();
+                const token1_addr = await want.token1();
+                const token0 = new ethers.Contract(token0_addr, ABI.ERC20, signer);
+                const token1 = new ethers.Contract(token1_addr, ABI.ERC20, signer);
+                const token0_name = await token0.symbol();
+                const token1_name = await token1.symbol();
+                name = `${token0_name}-${token1_name}`;
+                break;
+            default:
+                name = wantSymbol;
+                break;
+        }
 
         return {
             name,
@@ -136,43 +132,43 @@ async function initHarvests() {
 
 async function addRequirements(harvests) {
     const priceMap = async (harvest) => {
-      switch(harvest.wantSymbol){
-        case 'WAVAX': case 'PNG': return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
-        case 'PGL': return await estimatePriceOfAsset(PNG_ADDRESS, 18);
-        case 'JLP': case 'xJOE': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
-         
-      }
-      
-      switch(harvest.type){
-        case 'BENQI':
-            return await estimatePriceOfAsset(BENQI_ADDRESS, 18);
-        case 'BANKER':
-            return await estimatePriceOfAsset(JOE_ADDRESS, 18);
-        case 'AAVE':
-            return await estimatePriceOfAsset(WAVAX_ADDRESS, 18); 
-      }
+        switch (harvest.wantSymbol) {
+            case 'WAVAX': case 'PNG': return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+            case 'PGL': return await estimatePriceOfAsset(PNG_ADDRESS, 18);
+            case 'JLP': case 'xJOE': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
+
+        }
+
+        switch (harvest.type) {
+            case 'BENQI':
+                return await estimatePriceOfAsset(BENQI_ADDRESS, 18);
+            case 'BANKER':
+                return await estimatePriceOfAsset(JOE_ADDRESS, 18);
+            case 'AAVE':
+                return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+        }
     }
 
     const rewardMap = (harvest) => {
-        switch(harvest.type){
+        switch (harvest.type) {
             case 'BENQI':
                 return "QI";
             case 'AAVE':
-                return "WAVAX"; 
+                return "WAVAX";
             case 'BANKER':
-                return "JOE"; 
-          }
-        switch(harvest.wantSymbol){
+                return "JOE";
+        }
+        switch (harvest.wantSymbol) {
             case 'PGL': return 'PNG';
             case 'JLP': return 'JOE';
             case 'PNG': return 'WAVAX';
             default: return harvest.wantSymbol;
-      }
+        }
     };
 
     const addHarvestFees = async (harvest) => {
-        if (!priceMap(harvest) || 
-          !rewardMap(harvest)) {
+        if (!priceMap(harvest) ||
+            !rewardMap(harvest)) {
             throw new Error(`Unknown symbol: ${harvest.wantSymbol}`);
         }
 
@@ -180,24 +176,24 @@ async function addRequirements(harvests) {
         let harvestOverride = false;
 
         try {
-            if(harvest.type === "AAVE"){
-                harvestable = web3.utils.toBN(await harvest.strategy.methods.getWavaxAccrued().call());
+            if (harvest.type === "AAVE") {
+                harvestable = await harvest.strategy.getWavaxAccrued();
             } else {
-                harvestable = web3.utils.toBN(await harvest.strategy.methods.getHarvestable().call());
+                harvestable = await harvest.strategy.getHarvestable();
             }
-           
-        } catch(err) {
+
+        } catch (err) {
             // This fails for certain strategies where the strategy lacks a `rewarder`
             // Assuming the harvest should happen for now
-            harvestable = web3.utils.toBN(0);
+            harvestable = ethers.BigNumber.from("0");
             harvestOverride = true;
         }
 
-        var keep,keepMax;
-        try{
-            keep = web3.utils.toBN(await harvest.strategy.methods.keep().call());
-            keepMax = web3.utils.toBN(await harvest.strategy.methods.keepMax().call());
-        }catch(error){
+        var keep, keepMax;
+        try {
+            keep = ethers.BigNumber.from(await harvest.strategy.keep());
+            keepMax = ethers.BigNumber.from(await harvest.strategy.keepMax());
+        } catch (error) {
             //old strategy
         }
         return {
@@ -207,53 +203,55 @@ async function addRequirements(harvests) {
             harvestSymbol: rewardMap(harvest),
             keep,
             keepMax,
-            treasuryFee: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
-            treasuryMax: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryMax().call()),
-            balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
-            available: web3.utils.toBN(await harvest.snowglobe.methods.available().call()),
-            priceWAVAX: await priceMap({type:'ERC20', wantSymbol:'WAVAX'}),
+            treasuryFee: ethers.BigNumber.from(await harvest.strategy.performanceTreasuryFee()),
+            treasuryMax: ethers.BigNumber.from(await harvest.strategy.performanceTreasuryMax()),
+            balance: await harvest.snowglobe.balance(),
+            available: await harvest.snowglobe.available(),
+            priceWAVAX: await priceMap({ type: 'ERC20', wantSymbol: 'WAVAX' }),
             rewardPrice: await priceMap(harvest),
-            priceWant: harvest.type === 'LP'? await getPoolShareAsUSD(harvest.want) : await estimatePriceOfAsset(harvest.wantAddress,harvest.wantDecimals),
+            priceWant: harvest.type === 'LP' ? await getPoolShareAsUSD(harvest.want) : await estimatePriceOfAsset(harvest.wantAddress, harvest.wantDecimals),
         }
     };
     return await Promise.all(harvests.map(addHarvestFees))
-    .catch(err => {
-        console.error(`Error fetching requirements from strategy`);
-        throw err;
-    });
+        .catch(err => {
+            console.error(`Error fetching requirements from strategy`);
+            throw err;
+        });
 }
 
 function addCalculations(harvests) {
     const addHarvestGain = (harvest) => {
-      const gainWAVAX = harvest.harvestable.mul(harvest.rewardPrice).div(harvest.priceWAVAX);
-      const gainUSD = harvest.harvestable.mul(harvest.rewardPrice).div(Util.offset(18));
-      const ratio = harvest.balance.isZero() ? web3.utils.toBN(100) : harvest.available.muln(100).div(harvest.balance);
-      const availableUSD = harvest.available.mul(harvest.priceWant).div(Util.offset(18));
-    
-      return {
-        gainWAVAX,
-        gainUSD,
-        ratio,
-        availableUSD,
-        ...harvest,
-      }
+        const gainWAVAX = harvest.harvestable.mul(harvest.rewardPrice).div(harvest.priceWAVAX);
+        const gainUSD = harvest.harvestable.mul(harvest.rewardPrice).div(Util.offset(18));
+        const ratio = harvest.balance.isZero() ? ethers.BigNumber.from(100) : harvest.available.mul(100).div(harvest.balance);
+        const adjust = (harvest.wantDecimals - 18);
+        const availableUSD = harvest.available.mul(harvest.priceWant).div(Util.offset(18 + adjust));
+
+        return {
+            gainWAVAX,
+            gainUSD,
+            ratio,
+            availableUSD,
+            ...harvest,
+        }
     };
     return harvests.map(addHarvestGain);
 }
 
 async function addEarnTx(harvests) {
     const addTx = async (harvest) => {
-        const earnTx = harvest.snowglobe.methods.earn();
-        const estGas = await earnTx.estimateGas({from: CONFIG.WALLET.ADDRESS});
+        const earnTx = harvest.snowglobe.earn;
+        const snowglobeUnsigned = new ethers.Contract(harvest.snowglobe.address, ABI.SNOWGLOBE, provider);
+        const estGas = await snowglobeUnsigned.estimateGas.earn({ from: CONFIG.WALLET.ADDRESS });
         const earnGas = estGas > MAX_GAS_LIMIT_EARN ? estGas : MAX_GAS_LIMIT_EARN;
         return {
             ...harvest,
             earnTx,
-            earnGas,//await earnTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
+            earnGas: ethers.BigNumber.from(earnGas),//await earnTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
         };
     };
     const handleRejection = (harvest, err) => {
-        console.error(`Skipping ${harvest.name} due to earn() error (snowglobe: ${harvest.snowglobe._address})`);
+        console.error(`Skipping ${harvest.name} due to earn() error (snowglobe: ${harvest.snowglobe.address})`);
         console.error(err);
     };
     return Promise.allSettled(harvests.map(addTx))
@@ -262,17 +260,18 @@ async function addEarnTx(harvests) {
 
 async function addHarvestTx(harvests) {
     const addTx = async (harvest) => {
-        const harvestTx = harvest.strategy.methods.harvest();
-        const estGas = await harvestTx.estimateGas({from: CONFIG.WALLET.ADDRESS});
+        const harvestTx = harvest.strategy.harvest;
+        const strategyUnsigned = new ethers.Contract(harvest.strategy.address, ABI.STRATEGY, provider);
+        const estGas = await strategyUnsigned.estimateGas.harvest({ from: CONFIG.WALLET.ADDRESS });
         const harvestGas = estGas > MAX_GAS_LIMIT_HARV ? estGas : MAX_GAS_LIMIT_HARV;
         return {
             ...harvest,
             harvestTx,
-            harvestGas,//await harvestTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
+            harvestGas: ethers.BigNumber.from(harvestGas),//await harvestTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
         };
     };
     const handleRejection = (harvest, err) => {
-        console.error(`Skipping ${harvest.name} due to harvest() error (strategy: ${Util.cchainAddressLink(harvest.strategy._address)})`);
+        console.error(`Skipping ${harvest.name} due to harvest() error (strategy: ${Util.cchainAddressLink(harvest.strategy.address)})`);
         console.error(err);
     };
     return Promise.allSettled(harvests.map(addTx))
@@ -281,265 +280,353 @@ async function addHarvestTx(harvests) {
 
 async function addLeverageTx(harvests) {
     const addTx = async (harvest) => {
-        if(harvest.type === 'BENQI' || harvest.type === 'AAVE' || harvest.type === 'BANKER'){
+        if (harvest.type === 'BENQI' || harvest.type === 'AAVE' || harvest.type === 'BANKER') {
             try {
-                await harvest.strategy.methods.getMaxLeverage().call();
-                const leverageTx = harvest.strategy.methods.leverageToMax();
-                const estGas = await leverageTx.estimateGas({from: CONFIG.WALLET.ADDRESS});
+                //test if the strategy can be leveraged
+                await harvest.strategy.getMaxLeverage();
+
+                const leverageTx = harvest.strategy.leverageToMax;
+                const strategyUnsigned = new ethers.Contract(harvest.strategy.address, ABI.STRATEGY, provider);
+                const estGas = await strategyUnsigned.estimateGas.leverageToMax({ from: CONFIG.WALLET.ADDRESS });
                 const leverageGas = estGas > MAX_GAS_LIMIT_LEV ? estGas : MAX_GAS_LIMIT_LEV;
                 return {
                     ...harvest,
                     leverageTx,
-                    leverageGas, //await leverageTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
+                    leverageGas: ethers.BigNumber.from(leverageGas), //await leverageTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
                 }
             } catch (error) {
                 console.log(harvest.name);
                 console.log(error.message);
                 //cant be leveraged
-                return {...harvest};
+                return { ...harvest };
             }
-          }else{
-              return {...harvest};
-          }
+        } else {
+            return { ...harvest };
+        }
     }
 
-  const handleRejection = (harvest, err) => {
-      console.error(`Skipping ${harvest.name} due to leverageToMax() error (strategy: ${Util.cchainAddressLink(harvest.strategy._address)})`);
-      console.error(err);
-  };
-  return Promise.allSettled(harvests.map(addTx))
-      .then(results => handleSettledPromises(results, harvests, handleRejection));
+    const handleRejection = (harvest, err) => {
+        console.error(`Skipping ${harvest.name} due to leverageToMax() error (strategy: ${Util.cchainAddressLink(harvest.strategy.address)})`);
+        console.error(err);
+    };
+    return Promise.allSettled(harvests.map(addTx))
+        .then(results => handleSettledPromises(results, harvests, handleRejection));
+}
+
+async function addDeleverageTx(harvests) {
+    const addTx = async (harvest) => {
+        if (harvest.type === 'BENQI' || harvest.type === 'AAVE' || harvest.type === 'BANKER') {
+            try {
+                //test if the strategy can be leveraged
+                await harvest.strategy.getMaxLeverage();
+
+                const strategyUnsigned = new ethers.Contract(harvest.strategy.address, ABI.STRATEGY, provider);
+                const unleveragedSupply = await strategyUnsigned.callStatic["getSuppliedUnleveraged()"]({ from: CONFIG.WALLET.ADDRESS, gasLimit: 7_000_000 });
+                const idealSupply = await strategyUnsigned.callStatic["getLeveragedSupplyTarget(uint256)"](unleveragedSupply, { from: CONFIG.WALLET.ADDRESS, gasLimit: 7_000_000 });
+
+                const notSafe = await strategyUnsigned.callStatic["sync()"]({ from: CONFIG.WALLET.ADDRESS, gasLimit: 7_000_000 });
+                const estGas = await strategyUnsigned.estimateGas.sync({ from: CONFIG.WALLET.ADDRESS });
+
+                const deLeverageTx = harvest.strategy.sync;
+                const deLeverageGas = estGas > MAX_GAS_LIMIT_HARV ? estGas : MAX_GAS_LIMIT_HARV;
+                return {
+                    ...harvest,
+                    deLeverageTx,
+                    unleveragedSupply,
+                    idealSupply,
+                    notSafe,
+                    deLeverageGas: ethers.BigNumber.from(deLeverageGas), //await leverageTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
+                }
+            } catch (error) {
+                console.log(harvest.name);
+                console.log(error.message);
+                //cant be deleveraged
+                return { ...harvest };
+            }
+        } else {
+            return { ...harvest };
+        }
+    }
+
+    const handleRejection = (harvest, err) => {
+        console.error(`Skipping ${harvest.name} due to sync() error (strategy: ${Util.cchainAddressLink(harvest.strategy.address)})`);
+        console.error(err);
+    };
+    return Promise.allSettled(harvests.map(addTx))
+        .then(results => handleSettledPromises(results, harvests, handleRejection));
 }
 
 function addDecisions(harvests) {
     const addHarvestDecision = (harvest) => {
         console.log(`Determining execution decisions for ${harvest.name}`);
-        const cost = web3.utils.toBN(harvest.harvestGas).mul(web3.utils.toBN(harvest.gasPrice));
+        const cost = harvest.harvestGas.mul(harvest.gasPrice);
         var gain;
-        if(harvest.treasuryFee.gt(web3.utils.toBN(0))){
+        if (harvest.treasuryFee.gt("0x0")) {
             gain = harvest.gainWAVAX.mul(harvest.treasuryFee).div(harvest.treasuryMax);
-        }else{
+        } else {
             gain = harvest.gainWAVAX.mul(harvest.keep).div(harvest.keepMax);
         }
-        const TWO_HUNDRED_USD = web3.utils.toBN('200' + '0'.repeat(18));
-        const SEVENTY_FIVE_THOUSAND_USD = web3.utils.toBN('75000' + '0'.repeat(18));
-        const harvestDecision = cost.lt(gain) || harvest.harvestOverride 
+        const TWO_HUNDRED_USD = ethers.BigNumber.from('200' + '0'.repeat(18));
+        const harvestDecision = cost.lt(gain) || harvest.harvestOverride
             || harvest.type === "BANKER" || harvest.type === "AAVE" || harvest.type === "BENQI";
         if (harvest.harvestOverride && !cost.lt(gain)) {
             console.log(`Harvest decision overridden by flag!`);
         }
         console.log(`Harvest decision: ${harvestDecision}`);
-        const earnDecision = harvest.ratio.gten(1) && harvest.availableUSD.gt(TWO_HUNDRED_USD);
+        const earnDecision = harvest.ratio.gte(1) && harvest.availableUSD.gt(TWO_HUNDRED_USD);
         console.log(`Earn decision: ${earnDecision}`);
-        const leverageDecision = harvest.ratio.gten(1) && 
-                                 harvest.availableUSD.gt(SEVENTY_FIVE_THOUSAND_USD) &&
-                                 (harvest.type === 'BENQI' || harvest.type === 'AAVE' || 
-                                 harvest.type === 'BANKER') && harvest.leverageTx;
+        let leverageDecision = false, deLeverageDecision = false;
+        if (harvest.leverageTx && harvest.deLeverageTx) {
+            //if it's not safe we want to drop some of leveraging
+            if (harvest.notSafe) {
+                deLeverageDecision = true;
+            } else if (harvest.unleveragedSupply.lte(harvest.idealSupply)) {
+                //if it's safe we gonna leverage
+                leverageDecision = true;
+            }
+        }
         console.log(`Leverage decision: ${leverageDecision}`);
+        console.log(`De-leverage decision: ${deLeverageDecision}`);
         return {
             ...harvest,
             harvestDecision,
             earnDecision,
-            leverageDecision
+            leverageDecision,
+            deLeverageDecision
         };
     };
-    return harvests.map(addHarvestDecision);
+    return harvests.map(obj => addHarvestDecision(obj));
 }
 
 async function doHarvesting(harvests) {
-    let nonce = await web3.eth.getTransactionCount(CONFIG.WALLET.ADDRESS);
+    let nonce = await provider.getTransactionCount(CONFIG.WALLET.ADDRESS);
     const executeHarvestTx = async (harvest) => {
         if (!harvest.harvestDecision) return null;
-        if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would have harvested strategy ${harvest.name} (${harvest.strategy._address}). Set CONFIG.EXECUTION.ENABLED to enable harvesting`);
-        console.log(`Harvesting strategy address: ${harvest.strategy._address} (${harvest.name}) ...`);
-        return await harvest.harvestTx.send({ from: CONFIG.WALLET.ADDRESS, gas: harvest.harvestGas, gasPrice: harvest.gasPrice, nonce: nonce++ });
+        if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would have harvested strategy ${harvest.name} (${harvest.strategy.address}). Set CONFIG.EXECUTION.ENABLED to enable harvesting`);
+        console.log(`Harvesting strategy address: ${harvest.strategy.address} (${harvest.name}) ...`);
+        try {
+            const transaction = await harvest.harvestTx({ gasLimit: harvest.harvestGas, gasPrice: harvest.gasPrice, nonce: nonce++ });
+            await transaction.wait(1);
+            return transaction;
+        } catch (error) {
+            console.log(error.message);
+            return null;
+        }
+
+
     };
 
     const results = await Promise.allSettled(harvests.map(executeHarvestTx));
-    logHarvestingResults({ results, harvests });
-    var payload = {harvests, results:{
-      harvest:results
-    }};
+    logResults({ results, harvests, type: "Harvest" });
+    var payload = {
+        harvests, results: {
+            harvest: results
+        }
+    };
     return payload;
 }
 
 async function doEarning(payload) {
     await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning earn() calls for the provider to sync the nonce
 
-    let nonce = await web3.eth.getTransactionCount(CONFIG.WALLET.ADDRESS);
+    let nonce = await provider.getTransactionCount(CONFIG.WALLET.ADDRESS);
     const executeEarnTx = async (harvest) => {
         if (!harvest.earnDecision) return null;
-        if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would have swept ${harvest.snowglobe._address}. Set CONFIG.EXECUTION.ENABLED to enable sweeping`);
-        console.log(`Sweeping snowglobe address: ${harvest.snowglobe._address} (${harvest.name}) ...`);
-        return await harvest.earnTx.send({ from: CONFIG.WALLET.ADDRESS, gas: harvest.earnGas, gasPrice: harvest.gasPrice, nonce: nonce++ });
+        if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would have swept ${harvest.snowglobe.address}. Set CONFIG.EXECUTION.ENABLED to enable sweeping`);
+        console.log(`Sweeping snowglobe address: ${harvest.snowglobe.address} (${harvest.name}) ...`);
+        try {
+            const transaction = await harvest.earnTx({ gasLimit: harvest.earnGas, gasPrice: harvest.gasPrice, nonce: nonce++ });
+            await transaction.wait(1);
+            return transaction;
+        } catch (error) {
+            console.log(error.message);
+            return null;
+        }
     };
 
     const results = await Promise.allSettled(payload.harvests.map(executeEarnTx));
-    logEarnResults({ results, harvests: payload.harvests });
+    logResults({ results, harvests: payload.harvests, type: "Earn" });
     //let the discord messages to the finish
     payload.results.earn = results;
 
     return payload;
 }
 
-async function doLeveraging(payload){
-  await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning leverageToMax() calls for the provider to sync the nonce
+async function doLeveraging(payload) {
+    await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning leverageToMax() calls for the provider to sync the nonce
 
-  let nonce = await web3.eth.getTransactionCount(CONFIG.WALLET.ADDRESS);
-  const executeLeverageTx = async (harvest) => {
-      if (!harvest.leverageDecision) return null;
-      if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would have leveraged ${harvest.snowglobe._address}. Set CONFIG.EXECUTION.ENABLED to enable leveraging`);
-      console.log(`Leveraging snowglobe address: ${harvest.snowglobe._address} (${harvest.name}) ...`);
-      return await harvest.leverageTx.send({ from: CONFIG.WALLET.ADDRESS, gas: harvest.leverageGas, gasPrice: harvest.gasPrice, nonce: nonce++ });
-  };
+    let nonce = await provider.getTransactionCount(CONFIG.WALLET.ADDRESS);
+    const executeLeverageTx = async (harvest) => {
+        if (!harvest.leverageDecision) return null;
+        if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would have leveraged ${harvest.snowglobe.address}. Set CONFIG.EXECUTION.ENABLED to enable leveraging`);
+        console.log(`Leveraging snowglobe address: ${harvest.snowglobe.address} (${harvest.name}) ...`);
+        try {
+            const transaction = await harvest.leverageTx({ gasLimit: harvest.leverageGas, gasPrice: harvest.gasPrice, nonce: nonce++ });
+            await transaction.wait(1);
+            return transaction;
+        } catch (error) {
+            console.log(error.message);
+            return null;
+        }
+    };
 
-  const results = await Promise.allSettled(payload.harvests.map(executeLeverageTx));
-  logLeverageResults({ results, harvests: payload.harvests });
-  //let the discord messages to the finish
-  payload.results.leverage = results;
+    const results = await Promise.allSettled(payload.harvests.map(executeLeverageTx));
+    logResults({ results, harvests: payload.harvests, type: "Leverage" });
+    //let the discord messages to the finish
+    payload.results.leverage = results;
 
-  return payload;
+    return payload;
 }
 
-async function sendDiscord(payload){
+async function doDeleveraging(payload) {
+    await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning leverageToMax() calls for the provider to sync the nonce
+
+    let nonce = await provider.getTransactionCount(CONFIG.WALLET.ADDRESS);
+    const executeDeleverageTx = async (harvest) => {
+        if (!harvest.deLeverageDecision) return null;
+        if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would have deleveraged ${harvest.snowglobe.address}. Set CONFIG.EXECUTION.ENABLED to enable deleveraging`);
+        console.log(`deLeveraging snowglobe address: ${harvest.snowglobe.address} (${harvest.name}) ...`);
+        try {
+            const transaction = await harvest.deLeverageTx({ gasLimit: harvest.deLeverageGas, gasPrice: harvest.gasPrice, nonce: nonce++ });
+            await transaction.wait(1);
+            return transaction;
+        } catch (error) {
+            console.log(error.message);
+            return null;
+        }
+    };
+
+    const results = await Promise.allSettled(payload.harvests.map(executeDeleverageTx));
+    logResults({ results, harvests: payload.harvests, type: "Deleverage" });
+    //let the discord messages to the finish
+    payload.results.deleverage = results;
+
+    return payload;
+}
+
+async function sendDiscord(payload) {
     //we need to await for our discord calls when running at container mode, and we can't let it await
     //between transactions because it opens margin for frontrunning
 
-    await discordHarvestUpdate({ results:payload.results.harvest, harvests:payload.harvests });
-    await discordEarnUpdate({ results:payload.results.earn, harvests:payload.harvests });
-    await discordLeverageUpdate({ results:payload.results.leverage, harvests:payload.harvests });
+    await discordUpdate({results: payload.results, harvests: payload.harvests})
 }
 
-function logHarvestingResults({ results, harvests }) {
-    for (let i = 0; i < results.length; i++) {
-        const harvest = harvests[i];
-        if (!harvest.harvestDecision) continue;
-        const {reason, value} = results[i];
+function logResults(params) {
+    for (let i = 0; i < params.results.length; i++) {
+        const harvest = params.harvests[i];
+        const txType = params.type;
+        const { reason, value } = params.results[i];
+        switch (txType) {
+            case "Harvest":
+                if (!harvest.harvestDecision) {
+                    continue;
+                }
+                break;
+            case "Earn":
+                if (!harvest.earnDecision) {
+                    continue;
+                }
+                break;
+            case "Leverage":
+                if (!harvest.leverageDecision) {
+                    continue;
+                }
+                break;
+            case "Deleverage":
+                if (!harvest.deLeverageDecision) {
+                    continue;
+                }
+                break;
+        }
         console.log(`--------------------------------------------------------------------`);
         if (value || !CONFIG.EXECUTION.ENABLED) {
-            // Successfully called harvest() or a test run
-            console.log(`Strategy:    ${harvest.name} (${value?.to ?? harvest.strategy._address})`);
-            console.log(`Reinvested:  ${harvest.harvestOverride ? 'Unknown' : Util.displayBNasFloat(harvest.harvestable, 18)} ${harvest.harvestSymbol} ($${harvest.harvestOverride ? '?.??' : Util.displayBNasFloat(harvest.gainUSD, 18)})`);
+            // Successfully called leverageToMax() or a test run
+            console.log(`Snowglobe:   ${harvest.name} (${value?.to ?? harvest.snowglobe.address})`);
+            if (txType === "Harvest") {
+                console.log(`Reinvested:  ${harvest.harvestOverride ? 'Unknown' : Util.displayBNasFloat(harvest.harvestable, 18)} ${harvest.harvestSymbol} ($${harvest.harvestOverride ? '?.??' : Util.displayBNasFloat(harvest.gainUSD, 18)})`);
+            } else if (txType === "Earn") {
+                console.log(`${txType}:   ${Util.displayBNasFloat(harvest.available, harvest.wantDecimals, 5)} ${harvest.wantSymbol} ($${Util.displayBNasFloat(harvest.availableUSD, 18)})`);
+            } else {
+                console.log(`${txType}`)
+            }
             console.log(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
         } else {
-            // Failed to execute harvest()
-            console.error(`Failed to harvest for strategy ${value?.to ?? harvest.strategy._address} (${harvest.name})`);
+            // Failed to execute leverageToMax()
+            console.error(`Failed to ${txType} for snowglobe ${value?.to ?? harvest.snowglobe.address} (${harvest.name})`);
             console.error(reason);
         }
     }
     console.log(`--------------------------------------------------------------------`);
-    return { results, harvests };
+    return params;
 }
 
-function logEarnResults({ results, harvests }) {
-    for (let i = 0; i < results.length; i++) {
-        const harvest = harvests[i];
-        if (!harvest.earnDecision) continue;
-        const {reason, value} = results[i];
-        console.log(`--------------------------------------------------------------------`);
-        if (value || !CONFIG.EXECUTION.ENABLED) {
-            // Successfully called earn() or a test run
-            console.log(`Snowglobe:   ${harvest.name} (${value?.to ?? harvest.snowglobe._address})`);
-            console.log(`Swept:       ${Util.displayBNasFloat(harvest.available, harvest.wantDecimals, 5)} ${harvest.wantSymbol} ($${Util.displayBNasFloat(harvest.availableUSD, 18)})`);
-            console.log(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
-        } else {
-            // Failed to execute earn()
-            console.error(`Failed to sweep for snowglobe ${value?.to ?? harvest.snowglobe._address} (${harvest.name})`);
-            console.error(reason);
-        }
-    }
-    console.log(`--------------------------------------------------------------------`);
-    return { results, harvests };
-}
-
-function logLeverageResults({ results, harvests }) {
-  for (let i = 0; i < results.length; i++) {
-      const harvest = harvests[i];
-      if (!harvest.leverageDecision) continue;
-      const {reason, value} = results[i];
-      console.log(`--------------------------------------------------------------------`);
-      if (value || !CONFIG.EXECUTION.ENABLED) {
-          // Successfully called leverageToMax() or a test run
-          console.log(`Snowglobe:   ${harvest.name} (${value?.to ?? harvest.snowglobe._address})`);
-          console.log(`Leveraged:   ${Util.displayBNasFloat(harvest.available, harvest.wantDecimals, 5)} ${harvest.wantSymbol} ($${Util.displayBNasFloat(harvest.availableUSD, 18)})`);
-          console.log(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
-      } else {
-          // Failed to execute leverageToMax()
-          console.error(`Failed to leverage for snowglobe ${value?.to ?? harvest.snowglobe._address} (${harvest.name})`);
-          console.error(reason);
-      }
-  }
-  console.log(`--------------------------------------------------------------------`);
-  return { results, harvests };
-}
-
-async function discordHarvestUpdate({ results, harvests }) {
-    if (!CONFIG.EXECUTION.ENABLED) return console.log(`Discord notifications are disabled while in test mode`);
+async function discordUpdate({ results, harvests }) {
+    //if (!CONFIG.EXECUTION.ENABLED) return console.log(`Discord notifications are disabled while in test mode`);
     if (!CONFIG.DISCORD.ENABLED) return console.log(`Did not notify discord. Set CONFIG.DISCORD.ENABLED to send notifications to #harvests`);
-
-    for (let i = 0; i< results.length; i++) {
-        const {reason, value} = results[i];
-        const harvest = harvests[i];
-        if (!harvest.harvestDecision) continue;
-        if (value) {
-            const embedObj = {
-                Color:'0x00aaff',
-                Title:`Strategy: ${harvest.name}`,
-                Thumbnail:Util.thumbnailLink(harvest.name),
-                URL:Util.cchainTransactionLink(value.transactionHash),
+    for(let i = 0; i < harvests.length;i++){
+        const notifList = [];
+        if(harvests[i].harvestDecision){
+            notifList.push({harvest:true, txHash:results.harvest[i].transactionHash });
+        }
+        if(harvests[i].earnDecision){
+            notifList.push({earn:true, txHash:results.harvest[i].transactionHash });
+        }
+        if(harvests[i].leverageDecision){
+            notifList.push({leverage:true, txHash:results.harvest[i].transactionHash });
+        }
+        if(harvests[i].deLeverageDecision){
+            notifList.push({deleverage:true, txHash:results.harvest[i].transactionHash });
+        }
+        
+        for(const event of notifList){
+            await Util.wait(1000);
+            const embed = {
+                "embeds": [
+                  {
+                    "title": null,
+                    "description": null,
+                    "url": Util.cchainTransactionLink(event.txHash),
+                    "color": 43775,
+                    "timestamp": new Date(Date.now()).toISOString()
+                  }
+                ]
             };
-            const message = `**Reinvested:**  ${harvest.harvestOverride ? 'Unknown' : Util.displayBNasFloat(harvest.harvestable, 18, 2)} **${harvest.harvestSymbol}**\n`+
-                            `**Value**:  $${harvest.harvestOverride ? '?.??' : Util.displayBNasFloat(harvest.gainUSD, 18, 2)}`;
-            embedObj.Description = message;
-            await DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
+
+            if (event.harvest) {
+                embed.embeds[0].title = `Strategy: ${harvests[i].name}`;
+                embed.embeds[0].description = `**Reinvested:**  ${harvests[i].harvestOverride ? 'Unknown' : Util.displayBNasFloat(harvests[i].harvestable, 18, 2)} **${harvests[i].harvestSymbol}**\n`+
+                `**Value**:  $${harvests[i].harvestOverride ? '?.??' : Util.displayBNasFloat(harvests[i].gainUSD, 18, 2)}`;
+            } else if (event.earn) {
+                embed.embeds[0].title = `Snowglobe: ${harvests[i].name}`;
+                embed.embeds[0].description = `**Swept:**  ${Util.displayBNasFloat(harvests[i].available, harvests[i].wantDecimals, 5)} **${harvests[i].wantSymbol}**\n`+
+                `**Value**:  $${Util.displayBNasFloat(harvests[i].availableUSD, 18, 2)}`;         
+            } else if (event.leverage) {
+                embed.embeds[0].title = `Strategy: ${harvests[i].name}`;
+                embed.embeds[0].description = `**Leveraged**`;
+            } else if (event.deleverage) {
+                embed.embeds[0].title = `Strategy: ${harvests[i].name}`;
+                embed.embeds[0].description = `**Deleveraged**`;
+            }
+
+            if (embed.embeds[0].title) {
+                await axios({
+                    url:CONFIG.DISCORD.WEBHOOK_URL,
+                    method:'post',
+                    data: JSON.stringify(embed),
+                    headers: {
+                        'Content-Type': "application/json"
+                    }
+                }).then(res => {
+                    if (res.status !== 204) {
+                        console.error(`Could not post to Discord ${res.status}: ${res.statusText}`)
+                    }
+                }).catch(err => {
+                    console.error("Could not post to Discord: ", err)
+                })
+            }
         }
     }
-}
 
-async function discordEarnUpdate({ results, harvests }) {
-    if (!CONFIG.EXECUTION.ENABLED) return console.log(`Discord notifications are disabled while in test mode`);
-    if (!CONFIG.DISCORD.ENABLED) return console.log(`Did not notify discord. Set CONFIG.DISCORD.ENABLED to send notifications to #harvests`);
-
-    for (let i = 0; i< results.length; i++) {
-        const {reason, value} = results[i];
-        const harvest = harvests[i];
-        if (!harvest.earnDecision) continue;
-        if (value) {
-            const embedObj = {
-                Color:'0x00aaff',
-                Title:`Snowglobe: ${harvest.name}`,
-                Thumbnail:Util.thumbnailLink(harvest.name),
-                URL:Util.cchainTransactionLink(value.transactionHash),
-            };
-            const message = `**Swept:**  ${Util.displayBNasFloat(harvest.available, harvest.wantDecimals, 5)} **${harvest.wantSymbol}**\n`+
-                            `**Value**:  $${Util.displayBNasFloat(harvest.availableUSD, 18, 2)}`;
-            embedObj.Description = message;
-            await DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
-        }
-    }
-}
-
-async function discordLeverageUpdate({ results, harvests }) {
-  if (!CONFIG.EXECUTION.ENABLED) return console.log(`Discord notifications are disabled while in test mode`);
-  if (!CONFIG.DISCORD.ENABLED) return console.log(`Did not notify discord. Set CONFIG.DISCORD.ENABLED to send notifications to #harvests`);
-
-  for (let i = 0; i< results.length; i++) {
-      const {reason, value} = results[i];
-      const harvest = harvests[i];
-      if (!harvest.leverageDecision) continue;
-      if (value) {
-          const embedObj = {
-              Color:'0x00aaff',
-              Title:`Snowglobe: ${harvest.name}`,
-              Thumbnail:Util.thumbnailLink(harvest.name),
-              URL:Util.cchainTransactionLink(value.transactionHash),
-          };
-          const message = `**Leveraged:**  ${Util.displayBNasFloat(harvest.available, harvest.wantDecimals, 5)} **${harvest.wantSymbol}**\n`+
-                          `**Value**:  $${Util.displayBNasFloat(harvest.availableUSD, 18, 2)}`;
-          embedObj.Description = message;
-          await DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
-      }
-  }
 }
 
 function handleError(err) {
@@ -572,53 +659,53 @@ function scheduleNextHarvest() {
 ///// Helper functions
 
 async function initializeContracts(controllerAddresses, snowglobeAddress) {
-    if (!web3.utils.isAddress(snowglobeAddress)) throw new Error(`Invalid snowGlobe address ${snowglobeAddress}`);
+    if (!ethers.utils.isAddress(snowglobeAddress)) throw new Error(`Invalid snowGlobe address ${snowglobeAddress}`);
 
     for (const controllerAddress of controllerAddresses) {
-        if (!web3.utils.isAddress(controllerAddress)) throw new Error(`Invalid controller address ${controllerAddress}`);
+        if (!ethers.utils.isAddress(controllerAddress)) throw new Error(`Invalid controller address ${controllerAddress}`);
 
-        const controller = new web3.eth.Contract(ABI.CONTROLLER, controllerAddress);
-        const snowglobe = new web3.eth.Contract(ABI.SNOWGLOBE, snowglobeAddress);
+        const controller = new ethers.Contract(controllerAddress, ABI.CONTROLLER, signer);
+        const snowglobe = new ethers.Contract(snowglobeAddress, ABI.SNOWGLOBE, signer);
 
-        const wantAddress = await snowglobe.methods.token().call();
+        const wantAddress = await snowglobe.token();
         if (wantAddress === ZERO_ADDRESS) continue;
 
-        const strategyAddress = await controller.methods.strategies(wantAddress).call();
+        const strategyAddress = await controller.strategies(wantAddress);
         if (strategyAddress === ZERO_ADDRESS) continue;
 
-        const controllerSnowglobeAddress = await controller.methods.globes(wantAddress).call();
+        const controllerSnowglobeAddress = await controller.globes(wantAddress);
 
         if (controllerSnowglobeAddress !== snowglobeAddress) continue;
 
-        let type,poolToken = new web3.eth.Contract(ABI.UNI_V2_POOL, wantAddress);
-        const strategyContract = new web3.eth.Contract(ABI.STRATEGY, strategyAddress);
+        let type, poolToken = new ethers.Contract(wantAddress, ABI.UNI_V2_POOL, signer);
+        const strategyContract = new ethers.Contract(strategyAddress, ABI.STRATEGY, signer);
 
         try {
-          //test if this is an LP Token
-          await poolToken.methods.token1().call();
-          type = 'LP';
+            //test if this is an LP Token
+            await poolToken.token1();
+            type = 'LP';
         } catch (error) {
-          //not LP
-          poolToken = new web3.eth.Contract(ABI.ERC20, wantAddress);
-          try{
-            //test if this is from benqi
-            await strategyContract.methods.benqi().call();
-            type = 'BENQI';
-          }catch(error){
-            //AAVE pool
+            //not LP
+            poolToken = new ethers.Contract(wantAddress, ABI.ERC20, signer);
             try {
-                await strategyContract.methods.getWavaxAccrued().call();
-                type = 'AAVE';
+                //test if this is from benqi
+                await strategyContract.benqi();
+                type = 'BENQI';
             } catch (error) {
-                try{
-                    //test if this is from banker joe
-                    await strategyContract.methods.jToken().call();
-                    type = 'BANKER';
-                  }catch(error){
-                    type = 'ERC20';
-                  }
+                //AAVE pool
+                try {
+                    await strategyContract.getWavaxAccrued();
+                    type = 'AAVE';
+                } catch (error) {
+                    try {
+                        //test if this is from banker joe
+                        await strategyContract.jToken();
+                        type = 'BANKER';
+                    } catch (error) {
+                        type = 'ERC20';
+                    }
                 }
-          }
+            }
         }
 
         return {
@@ -635,48 +722,46 @@ async function initializeContracts(controllerAddresses, snowglobeAddress) {
 }
 
 async function getPoolShareAsUSD(poolContract) {
-    const token0Address = await poolContract.methods.token0().call();
-    const token1Address = await poolContract.methods.token1().call();
-    const { _reserve0, _reserve1 } = await poolContract.methods.getReserves().call();
-    const reserve0 = web3.utils.toBN(_reserve0);
-    const reserve1 = web3.utils.toBN(_reserve1);
-    const totalSupply = web3.utils.toBN(await poolContract.methods.totalSupply().call());
+    const token0Address = await poolContract.token0();
+    const token1Address = await poolContract.token1();
+    const reserves = await poolContract.getReserves();
+    const totalSupply = await poolContract.totalSupply();
     try {
-      if (token0Address === WAVAX_ADDRESS) {
-        const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
-        return reserve0.muln(2).mul(priceWAVAX).div(totalSupply);
-    } else if (token1Address === WAVAX_ADDRESS) {
-        const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
-        return reserve1.muln(2).mul(priceWAVAX).div(totalSupply);
-    } else if (token0Address === PNG_ADDRESS) {
-        const pricePNG = await estimatePriceOfAsset(PNG_ADDRESS, 18);
-        return reserve0.muln(2).mul(pricePNG).div(totalSupply);
-    } else if (token1Address === PNG_ADDRESS) {
-        const pricePNG = await estimatePriceOfAsset(PNG_ADDRESS, 18);
-        return reserve1.muln(2).mul(pricePNG).div(totalSupply);
-    } else if (token0Address === JOE_ADDRESS) {
-        const priceJOE = await estimatePriceOfAsset(JOE_ADDRESS, 18);
-        return reserve0.muln(2).mul(priceJOE).div(totalSupply);
-    } else if (token1Address === JOE_ADDRESS) {
-        const priceJOE = await estimatePriceOfAsset(JOE_ADDRESS, 18);
-        return reserve1.muln(2).mul(priceJOE).div(totalSupply);
-    } else {
-      try {
-        const token0Contract = new web3.eth.Contract(ABI.ERC20, token0Address);
-        const token0Decimals = await token0Contract.methods.decimals().call();
-        const priceToken0 = await estimatePriceOfAsset(token0Address, token0Decimals);
-        return reserve0.muln(2).mul(priceToken0).div(totalSupply);
-      } catch (error) {
-        const token1Contract = new web3.eth.Contract(ABI.ERC20, token1Address);
-        const token1Decimals = await token1Contract.methods.decimals().call();
-        const priceToken1 = await estimatePriceOfAsset(token1Address, token1Decimals);
-        return reserve1.muln(2).mul(priceToken1).div(totalSupply);
-      }
-    }
+        if (token0Address === WAVAX_ADDRESS) {
+            const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+            return reserves._reserve0.mul(2).mul(priceWAVAX).div(totalSupply);
+        } else if (token1Address === WAVAX_ADDRESS) {
+            const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+            return reserves._reserve1.mul(2).mul(priceWAVAX).div(totalSupply);
+        } else if (token0Address === PNG_ADDRESS) {
+            const pricePNG = await estimatePriceOfAsset(PNG_ADDRESS, 18);
+            return reserves._reserve0.mul(2).mul(pricePNG).div(totalSupply);
+        } else if (token1Address === PNG_ADDRESS) {
+            const pricePNG = await estimatePriceOfAsset(PNG_ADDRESS, 18);
+            return reserves._reserve1.mul(2).mul(pricePNG).div(totalSupply);
+        } else if (token0Address === JOE_ADDRESS) {
+            const priceJOE = await estimatePriceOfAsset(JOE_ADDRESS, 18);
+            return reserves._reserve0.mul(2).mul(priceJOE).div(totalSupply);
+        } else if (token1Address === JOE_ADDRESS) {
+            const priceJOE = await estimatePriceOfAsset(JOE_ADDRESS, 18);
+            return reserves._reserve1.mul(2).mul(priceJOE).div(totalSupply);
+        } else {
+            try {
+                const token0Contract = new ethers.Contract(token0Address, ABI.ERC20, signer);
+                const token0Decimals = await token0Contract.decimals();
+                const priceToken0 = await estimatePriceOfAsset(token0Address, token0Decimals);
+                return reserves._reserve0.mul(2).mul(priceToken0).div(totalSupply);
+            } catch (error) {
+                const token1Contract = new ethers.Contract(token1Address, ABI.ERC20, signer);
+                const token1Decimals = await token1Contract.decimals();
+                const priceToken1 = await estimatePriceOfAsset(token1Address, token1Decimals);
+                return reserves._reserve1.mul(2).mul(priceToken1).div(totalSupply);
+            }
+        }
     } catch (error) {
-      console.error(`Could not convert want address ${poolContract._address} to USD`);
-      console.error(error.message);
-      return web3.utils.toBN('0');
+        console.error(`Could not convert want address ${poolContract.address} to USD`);
+        console.error(error.message);
+        return ethers.BigNumber.from('0');
     }
 
 }
@@ -684,20 +769,21 @@ async function getPoolShareAsUSD(poolContract) {
 async function estimatePriceOfAsset(assetAddress, assetDecimals) {
     const { ROUTER, ROUTE } = VALUATION(assetAddress);
     const destination = ROUTE[ROUTE.length - 1];
-    const destinationContract = new web3.eth.Contract(ABI.ERC20, destination);
-    const destinationDecimals = parseInt(await destinationContract.methods.decimals().call());
-    const correction = web3.utils.toBN(destinationDecimals - assetDecimals);
+    const destinationContract = new ethers.Contract(destination, ABI.ERC20, signer);
+    const destinationDecimals = parseInt(await destinationContract.decimals());
+    const correction = ethers.BigNumber.from(assetDecimals - destinationDecimals);
 
-    const routerContract = new web3.eth.Contract(ABI.UNI_V2_ROUTER, ROUTER);
-    const [input, output] = await routerContract.methods.getAmountsOut('1' + '0'.repeat(assetDecimals), ROUTE).call();
-    let price = web3.utils.toBN(output).mul(web3.utils.toBN(10).pow(correction));
-    
+    const routerContract = new ethers.Contract(ROUTER, ABI.UNI_V2_ROUTER, signer);
+    const [input, output] = await routerContract.getAmountsOut('1' + '0'.repeat(assetDecimals), ROUTE);
+    let price = output;
+    if (correction > 0) {
+        price = output.mul(ethers.BigNumber.from(10).pow(correction));
+    }
+
     //calculate the value of the token through AVAX price
-    if(destination === WAVAX_ADDRESS){
-      const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
-      const priceFloat = (price/1e18)*(priceWAVAX/1e18);
-      const priceWei = ethers.utils.parseUnits(roundDown(priceFloat,18),18);
-      price = web3.utils.toBN(priceWei.toString());
+    if (destination === WAVAX_ADDRESS) {
+        const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+        price = price.mul(priceWAVAX).div('1' + '0'.repeat(18));
     }
     return price;
 }
