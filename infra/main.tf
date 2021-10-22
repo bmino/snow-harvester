@@ -18,7 +18,7 @@ locals {
           value = data.aws_ssm_parameter.discord_key.value
         },
         {
-          name: "WEBHOOK",
+          name: "WEBHOOK_URL",
           value = data.aws_ssm_parameter.webhook.value
         }
       ],
