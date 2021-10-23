@@ -398,25 +398,27 @@ function addDecisions(harvests) {
     return harvests.map(obj => addHarvestDecision(obj));
 }
 
+
+const executeTx = async (harvest, decision, tx, type) => {
+    if (!decision) return null;
+    if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would ${type} strategy ${harvest.name} (${harvest.strategy.address}). Set CONFIG.EXECUTION.ENABLED to enable harvesting`);
+    console.log(`${type} strategy address: ${harvest.strategy.address} (${harvest.name}) ...`);
+    try {
+        const transaction = await tx({ gasLimit: 7_000_000, gasPrice: harvest.gasPrice });
+        const finishedTx = await transaction.wait(1);
+        return finishedTx;
+    } catch (error) {
+        console.log(error.message);
+        return null;
+    }
+};
+
 async function doHarvesting(harvests) {
-    let nonce = await provider.getTransactionCount(CONFIG.WALLET.ADDRESS);
-    const executeHarvestTx = async (harvest) => {
-        if (!harvest.harvestDecision) return null;
-        if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would have harvested strategy ${harvest.name} (${harvest.strategy.address}). Set CONFIG.EXECUTION.ENABLED to enable harvesting`);
-        console.log(`Harvesting strategy address: ${harvest.strategy.address} (${harvest.name}) ...`);
-        try {
-            const transaction = await harvest.harvestTx({ gasLimit: harvest.harvestGas, gasPrice: harvest.gasPrice, nonce: nonce++ });
-            await transaction.wait(1);
-            return transaction;
-        } catch (error) {
-            console.log(error.message);
-            return null;
-        }
-
-
-    };
-
-    const results = await Promise.allSettled(harvests.map(executeHarvestTx));
+    let results = [];
+    for(const harvest of harvests){
+        results.push(await executeTx(harvest, harvest.harvestDecision, harvest.harvestTx, "Harvest"));
+    }
+    
     logResults({ results, harvests, type: "Harvest" });
     var payload = {
         harvests, results: {
@@ -429,76 +431,43 @@ async function doHarvesting(harvests) {
 async function doEarning(payload) {
     await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning earn() calls for the provider to sync the nonce
 
-    let nonce = await provider.getTransactionCount(CONFIG.WALLET.ADDRESS);
-    const executeEarnTx = async (harvest) => {
-        if (!harvest.earnDecision) return null;
-        if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would have swept ${harvest.snowglobe.address}. Set CONFIG.EXECUTION.ENABLED to enable sweeping`);
-        console.log(`Sweeping snowglobe address: ${harvest.snowglobe.address} (${harvest.name}) ...`);
-        try {
-            const transaction = await harvest.earnTx({ gasLimit: harvest.earnGas, gasPrice: harvest.gasPrice, nonce: nonce++ });
-            await transaction.wait(1);
-            return transaction;
-        } catch (error) {
-            console.log(error.message);
-            return null;
-        }
-    };
+    let results = [];
+    for(const harvest of payload.harvests){
+        results.push(await executeTx(harvest, harvest.earnDecision, harvest.earnTx, "Earn"));
+    }
+    
+    logResults({ results, harvests:payload.harvests, type: "Earn" });
 
-    const results = await Promise.allSettled(payload.harvests.map(executeEarnTx));
-    logResults({ results, harvests: payload.harvests, type: "Earn" });
-    //let the discord messages to the finish
     payload.results.earn = results;
 
     return payload;
 }
 
 async function doLeveraging(payload) {
-    await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning leverageToMax() calls for the provider to sync the nonce
+    await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning earn() calls for the provider to sync the nonce
 
-    let nonce = await provider.getTransactionCount(CONFIG.WALLET.ADDRESS);
-    const executeLeverageTx = async (harvest) => {
-        if (!harvest.leverageDecision) return null;
-        if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would have leveraged ${harvest.snowglobe.address}. Set CONFIG.EXECUTION.ENABLED to enable leveraging`);
-        console.log(`Leveraging snowglobe address: ${harvest.snowglobe.address} (${harvest.name}) ...`);
-        try {
-            const transaction = await harvest.leverageTx({ gasLimit: harvest.leverageGas, gasPrice: harvest.gasPrice, nonce: nonce++ });
-            await transaction.wait(1);
-            return transaction;
-        } catch (error) {
-            console.log(error.message);
-            return null;
-        }
-    };
+    let results = [];
+    for(const harvest of payload.harvests){
+        results.push(await executeTx(harvest, harvest.leverageDecision, harvest.leverageTx, "Leverage"));
+    }
+    
+    logResults({ results, harvests:payload.harvests, type: "Leverage" });
 
-    const results = await Promise.allSettled(payload.harvests.map(executeLeverageTx));
-    logResults({ results, harvests: payload.harvests, type: "Leverage" });
-    //let the discord messages to the finish
     payload.results.leverage = results;
 
     return payload;
 }
 
 async function doDeleveraging(payload) {
-    await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning leverageToMax() calls for the provider to sync the nonce
+    await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning earn() calls for the provider to sync the nonce
 
-    let nonce = await provider.getTransactionCount(CONFIG.WALLET.ADDRESS);
-    const executeDeleverageTx = async (harvest) => {
-        if (!harvest.deLeverageDecision) return null;
-        if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would have deleveraged ${harvest.snowglobe.address}. Set CONFIG.EXECUTION.ENABLED to enable deleveraging`);
-        console.log(`deLeveraging snowglobe address: ${harvest.snowglobe.address} (${harvest.name}) ...`);
-        try {
-            const transaction = await harvest.deLeverageTx({ gasLimit: harvest.deLeverageGas, gasPrice: harvest.gasPrice, nonce: nonce++ });
-            await transaction.wait(1);
-            return transaction;
-        } catch (error) {
-            console.log(error.message);
-            return null;
-        }
-    };
+    let results = [];
+    for(const harvest of payload.harvests){
+        results.push(await executeTx(harvest, harvest.deLeverageDecision, harvest.deLeverageTx, "Deleverage"));
+    }
+    
+    logResults({ results, harvests:payload.harvests, type: "Deleverage" });
 
-    const results = await Promise.allSettled(payload.harvests.map(executeDeleverageTx));
-    logResults({ results, harvests: payload.harvests, type: "Deleverage" });
-    //let the discord messages to the finish
     payload.results.deleverage = results;
 
     return payload;
@@ -515,7 +484,7 @@ function logResults(params) {
     for (let i = 0; i < params.results.length; i++) {
         const harvest = params.harvests[i];
         const txType = params.type;
-        const { reason, value } = params.results[i];
+        const value = params.results[i];
         switch (txType) {
             case "Harvest":
                 if (!harvest.harvestDecision) {
@@ -540,7 +509,7 @@ function logResults(params) {
         }
         console.log(`--------------------------------------------------------------------`);
         if (value || !CONFIG.EXECUTION.ENABLED) {
-            // Successfully called leverageToMax() or a test run
+            // Successfully called transaction or a test run
             console.log(`Snowglobe:   ${harvest.name} (${value?.to ?? harvest.snowglobe.address})`);
             if (txType === "Harvest") {
                 console.log(`Reinvested:  ${harvest.harvestOverride ? 'Unknown' : Util.displayBNasFloat(harvest.harvestable, 18)} ${harvest.harvestSymbol} ($${harvest.harvestOverride ? '?.??' : Util.displayBNasFloat(harvest.gainUSD, 18)})`);
@@ -551,9 +520,8 @@ function logResults(params) {
             }
             console.log(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
         } else {
-            // Failed to execute leverageToMax()
+            // Failed to execute transaction
             console.error(`Failed to ${txType} for snowglobe ${value?.to ?? harvest.snowglobe.address} (${harvest.name})`);
-            console.error(reason);
         }
     }
     console.log(`--------------------------------------------------------------------`);
@@ -561,25 +529,25 @@ function logResults(params) {
 }
 
 async function discordUpdate({ results, harvests }) {
-    //if (!CONFIG.EXECUTION.ENABLED) return console.log(`Discord notifications are disabled while in test mode`);
+    if (!CONFIG.EXECUTION.ENABLED) return console.log(`Discord notifications are disabled while in test mode`);
     if (!CONFIG.DISCORD.ENABLED) return console.log(`Did not notify discord. Set CONFIG.DISCORD.ENABLED to send notifications to #harvests`);
     for(let i = 0; i < harvests.length;i++){
         const notifList = [];
-        if(harvests[i].harvestDecision){
-            notifList.push({harvest:true, txHash:results.harvest[i].transactionHash });
+        if(harvests[i].harvestDecision && results.harvest[i]){
+            notifList.push({harvest:true, txHash:results.harvest[i]?.transactionHash });
         }
-        if(harvests[i].earnDecision){
-            notifList.push({earn:true, txHash:results.harvest[i].transactionHash });
+        if(harvests[i].earnDecision && results.earn[i]){
+            notifList.push({earn:true, txHash:results.earn[i]?.transactionHash });
         }
-        if(harvests[i].leverageDecision){
-            notifList.push({leverage:true, txHash:results.harvest[i].transactionHash });
+        if(harvests[i].leverageDecision && results.leverage[i]){
+            notifList.push({leverage:true, txHash:results.leverage[i]?.transactionHash });
         }
-        if(harvests[i].deLeverageDecision){
-            notifList.push({deleverage:true, txHash:results.harvest[i].transactionHash });
+        if(harvests[i].deLeverageDecision && results.deleverage[i]){
+            notifList.push({deleverage:true, txHash:results.deleverage[i]?.transactionHash });
         }
         
         for(const event of notifList){
-            await Util.wait(1000);
+            await Util.wait(3000);
             const embed = {
                 "embeds": [
                   {
