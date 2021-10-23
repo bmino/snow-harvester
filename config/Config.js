@@ -14,8 +14,7 @@ const Config = {
     },
     DISCORD: {
         ENABLED: true,
-        TOKEN: process.env.DISCORD_KEY,
-        CHANNEL: '818943563759878196', // #harvests
+        WEBHOOK_URL: process.env.WEBHOOK_URL
     },
 };
 

@@ -13,7 +13,8 @@ const Constants = {
     MAX_GAS_LIMIT_EARN: 2500000,
     MAX_GAS_LIMIT_HARV: 1000000,
     MAX_GAS_LIMIT_LEV: 2500000,
-    MAX_GAS_PRICE: 100000000000
+    MAX_GAS_PRICE: 100000000000,
+    RPC_LINK: 'https://api.avax.network/ext/bc/C/rpc'
 };
 
 module.exports = Constants;

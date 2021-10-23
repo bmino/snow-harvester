@@ -16,6 +16,10 @@ locals {
          {
           name  = "DISCORD_KEY"
           value = data.aws_ssm_parameter.discord_key.value
+        },
+        {
+          name: "WEBHOOK_URL",
+          value = data.aws_ssm_parameter.webhook.value
         }
       ],
       logConfiguration = {
@@ -84,7 +88,7 @@ resource "aws_ecr_repository" "repo" {
 module "ecs_scheduled_task" {
   source                         = "git@github.com:Snowball-Finance/terraform-ecs-schedule-task.git"
   name                           = "${local.env}-${local.task_name}"
-  schedule_expression            = "rate(360 minutes)"
+  schedule_expression            = "rate(8 hours)"
   cluster_arn                    = aws_ecs_cluster.this.arn
   subnets                        = data.terraform_remote_state.vpc.outputs.private_subnets
   container_definitions          = local.task_definition

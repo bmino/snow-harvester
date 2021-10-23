@@ -15,3 +15,7 @@ data "aws_ssm_parameter" "discord_key" {
 data "aws_ssm_parameter" "dd_dog" {
   name = "${local.env}-data-dog-api-key"
 }
+
+data "aws_ssm_parameter" "webhook" {
+  name = "${local.env}-harvester-webhook"
+}

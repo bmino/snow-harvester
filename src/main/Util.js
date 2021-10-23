@@ -1,9 +1,6 @@
-const Web3 = require('web3');
+const { ethers } = require('ethers');
 
 const Util = {
-
-    BN_TEN: Web3.utils.toBN(10),
-    BN_ZERO: Web3.utils.toBN(0),
 
     convertBNtoFloat(bigNumber, decimals) {
         return Util.convertStringToFloat(bigNumber.toString(), decimals);
@@ -42,7 +39,7 @@ const Util = {
     },
 
     offset(decimals) {
-        return Web3.utils.toBN('1' + '0'.repeat(decimals));
+        return ethers.BigNumber.from('1' + '0'.repeat(decimals));
     },
 
     wait(ms) {
