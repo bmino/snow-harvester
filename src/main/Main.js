@@ -136,7 +136,6 @@ async function addRequirements(harvests) {
             case 'WAVAX': case 'PNG': return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
             case 'PGL': return await estimatePriceOfAsset(PNG_ADDRESS, 18);
             case 'JLP': case 'xJOE': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
-
         }
 
         switch (harvest.type) {
@@ -145,6 +144,8 @@ async function addRequirements(harvests) {
             case 'BANKER':
                 return await estimatePriceOfAsset(JOE_ADDRESS, 18);
             case 'AAVE':
+                return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+            default:
                 return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
         }
     }
