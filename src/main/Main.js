@@ -387,12 +387,6 @@ function addDecisions(harvests) {
                 leverageDecision = true;
             }
         }
-        if(harvest.type === "BANKER"){
-            leverageDecision = false;
-            deLeverageDecision = false;
-            harvestDecision = false;
-            earnDecision = false;
-        }
         console.log(`Harvest decision: ${harvestDecision}`);
         console.log(`Earn decision: ${earnDecision}`);
         console.log(`Leverage decision: ${leverageDecision}`);
