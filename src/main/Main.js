@@ -368,15 +368,16 @@ function addDecisions(harvests) {
             gain = harvest.gainWAVAX.mul(harvest.keep).div(harvest.keepMax);
         }
         const TWO_HUNDRED_USD = ethers.BigNumber.from('200' + '0'.repeat(18));
-        const harvestDecision = cost.lt(gain) || harvest.harvestOverride
+        let harvestDecision = cost.lt(gain) || harvest.harvestOverride
             || harvest.type === "BANKER" || harvest.type === "AAVE" || harvest.type === "BENQI";
         if (harvest.harvestOverride && !cost.lt(gain)) {
             console.log(`Harvest decision overridden by flag!`);
         }
-        console.log(`Harvest decision: ${harvestDecision}`);
-        const earnDecision = harvest.ratio.gte(1) && harvest.availableUSD.gt(TWO_HUNDRED_USD);
-        console.log(`Earn decision: ${earnDecision}`);
+
+        let earnDecision = harvest.ratio.gte(1) && harvest.availableUSD.gt(TWO_HUNDRED_USD);
+
         let leverageDecision = false, deLeverageDecision = false;
+        //disabled banker joe for now
         if (harvest.leverageTx && harvest.deLeverageTx) {
             //if it's not safe we want to drop some of leveraging
             if (harvest.notSafe) {
@@ -386,6 +387,14 @@ function addDecisions(harvests) {
                 leverageDecision = true;
             }
         }
+        if(harvest.type === "BANKER"){
+            leverageDecision = false;
+            deLeverageDecision = false;
+            harvestDecision = false;
+            earnDecision = false;
+        }
+        console.log(`Harvest decision: ${harvestDecision}`);
+        console.log(`Earn decision: ${earnDecision}`);
         console.log(`Leverage decision: ${leverageDecision}`);
         console.log(`De-leverage decision: ${deLeverageDecision}`);
         return {
