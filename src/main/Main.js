@@ -14,16 +14,35 @@ const {
     MAX_GAS_LIMIT_LEV,
     MAX_GAS_LIMIT_HARV,
     MAX_GAS_PRICE,
-    RPC_LINK
+    PROVIDERS_URL
 } = require('../../config/Constants');
 const { ethers } = require('ethers');
 
-const provider = new ethers.providers.StaticJsonRpcProvider(RPC_LINK);
-const signer = new ethers.Wallet(CONFIG.WALLET.KEY, provider);
+var provider, signer;
 
 // Authenticate our wallet
 if (CONFIG.EXECUTION.ENABLED) {
     console.log(`WARNING!! Test mode is disabled. Real harvesting might begin!!`);
+}
+
+const selectBestProvider = async () => {
+
+    for (const url of PROVIDERS_URL) {
+        const currentProvider = new ethers.providers.
+            StaticJsonRpcProvider(url);
+
+        //do a quick call to check if the node is sync
+        try {
+            //avalanche burn address
+            await currentProvider.getBalance('0x0100000000000000000000000000000000000000');
+            return currentProvider;
+        } catch (error) {
+            console.error(error);
+        }
+    }
+    if (!provider) {
+        throw Error("Can't stabilish connection with the blockchain.");
+    }
 }
 
 // Globals to manage consistent scheduling with a window of variance
@@ -78,6 +97,9 @@ async function getSnowglobes() {
 }
 
 async function initHarvests() {
+    provider = await selectBestProvider();
+    signer = new ethers.Wallet(CONFIG.WALLET.KEY, provider);
+
     const gasPrice = await provider.getGasPrice();
     //we shouldnt harvest if the gas price is too high
     if (gasPrice > MAX_GAS_PRICE) {
@@ -419,10 +441,10 @@ const executeTx = async (harvest, decision, tx, type) => {
 
 async function doHarvesting(harvests) {
     let results = [];
-    for(const harvest of harvests){
+    for (const harvest of harvests) {
         results.push(await executeTx(harvest, harvest.harvestDecision, harvest.harvestTx, "Harvest"));
     }
-    
+
     logResults({ results, harvests, type: "Harvest" });
     var payload = {
         harvests, results: {
@@ -436,11 +458,11 @@ async function doEarning(payload) {
     await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning earn() calls for the provider to sync the nonce
 
     let results = [];
-    for(const harvest of payload.harvests){
+    for (const harvest of payload.harvests) {
         results.push(await executeTx(harvest, harvest.earnDecision, harvest.earnTx, "Earn"));
     }
-    
-    logResults({ results, harvests:payload.harvests, type: "Earn" });
+
+    logResults({ results, harvests: payload.harvests, type: "Earn" });
 
     payload.results.earn = results;
 
@@ -451,11 +473,11 @@ async function doLeveraging(payload) {
     await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning earn() calls for the provider to sync the nonce
 
     let results = [];
-    for(const harvest of payload.harvests){
+    for (const harvest of payload.harvests) {
         results.push(await executeTx(harvest, harvest.leverageDecision, harvest.leverageTx, "Leverage"));
     }
-    
-    logResults({ results, harvests:payload.harvests, type: "Leverage" });
+
+    logResults({ results, harvests: payload.harvests, type: "Leverage" });
 
     payload.results.leverage = results;
 
@@ -466,11 +488,11 @@ async function doDeleveraging(payload) {
     await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning earn() calls for the provider to sync the nonce
 
     let results = [];
-    for(const harvest of payload.harvests){
+    for (const harvest of payload.harvests) {
         results.push(await executeTx(harvest, harvest.deLeverageDecision, harvest.deLeverageTx, "Deleverage"));
     }
-    
-    logResults({ results, harvests:payload.harvests, type: "Deleverage" });
+
+    logResults({ results, harvests: payload.harvests, type: "Deleverage" });
 
     payload.results.deleverage = results;
 
@@ -481,7 +503,7 @@ async function sendDiscord(payload) {
     //we need to await for our discord calls when running at container mode, and we can't let it await
     //between transactions because it opens margin for frontrunning
 
-    await discordUpdate({results: payload.results, harvests: payload.harvests})
+    await discordUpdate({ results: payload.results, harvests: payload.harvests })
 }
 
 function logResults(params) {
@@ -535,43 +557,43 @@ function logResults(params) {
 async function discordUpdate({ results, harvests }) {
     if (!CONFIG.EXECUTION.ENABLED) return console.log(`Discord notifications are disabled while in test mode`);
     if (!CONFIG.DISCORD.ENABLED) return console.log(`Did not notify discord. Set CONFIG.DISCORD.ENABLED to send notifications to #harvests`);
-    for(let i = 0; i < harvests.length;i++){
+    for (let i = 0; i < harvests.length; i++) {
         const notifList = [];
-        if(harvests[i].harvestDecision && results.harvest[i]){
-            notifList.push({harvest:true, txHash:results.harvest[i]?.transactionHash });
+        if (harvests[i].harvestDecision && results.harvest[i]) {
+            notifList.push({ harvest: true, txHash: results.harvest[i]?.transactionHash });
         }
-        if(harvests[i].earnDecision && results.earn[i]){
-            notifList.push({earn:true, txHash:results.earn[i]?.transactionHash });
+        if (harvests[i].earnDecision && results.earn[i]) {
+            notifList.push({ earn: true, txHash: results.earn[i]?.transactionHash });
         }
-        if(harvests[i].leverageDecision && results.leverage[i]){
-            notifList.push({leverage:true, txHash:results.leverage[i]?.transactionHash });
+        if (harvests[i].leverageDecision && results.leverage[i]) {
+            notifList.push({ leverage: true, txHash: results.leverage[i]?.transactionHash });
         }
-        if(harvests[i].deLeverageDecision && results.deleverage[i]){
-            notifList.push({deleverage:true, txHash:results.deleverage[i]?.transactionHash });
+        if (harvests[i].deLeverageDecision && results.deleverage[i]) {
+            notifList.push({ deleverage: true, txHash: results.deleverage[i]?.transactionHash });
         }
-        
-        for(const event of notifList){
+
+        for (const event of notifList) {
             await Util.wait(3000);
             const embed = {
                 "embeds": [
-                  {
-                    "title": null,
-                    "description": null,
-                    "url": Util.cchainTransactionLink(event.txHash),
-                    "color": 43775,
-                    "timestamp": new Date(Date.now()).toISOString()
-                  }
+                    {
+                        "title": null,
+                        "description": null,
+                        "url": Util.cchainTransactionLink(event.txHash),
+                        "color": 43775,
+                        "timestamp": new Date(Date.now()).toISOString()
+                    }
                 ]
             };
 
             if (event.harvest) {
                 embed.embeds[0].title = `Strategy: ${harvests[i].name}`;
-                embed.embeds[0].description = `**Reinvested:**  ${harvests[i].harvestOverride ? 'Unknown' : Util.displayBNasFloat(harvests[i].harvestable, 18, 2)} **${harvests[i].harvestSymbol}**\n`+
-                `**Value**:  $${harvests[i].harvestOverride ? '?.??' : Util.displayBNasFloat(harvests[i].gainUSD, 18, 2)}`;
+                embed.embeds[0].description = `**Reinvested:**  ${harvests[i].harvestOverride ? 'Unknown' : Util.displayBNasFloat(harvests[i].harvestable, 18, 2)} **${harvests[i].harvestSymbol}**\n` +
+                    `**Value**:  $${harvests[i].harvestOverride ? '?.??' : Util.displayBNasFloat(harvests[i].gainUSD, 18, 2)}`;
             } else if (event.earn) {
                 embed.embeds[0].title = `Snowglobe: ${harvests[i].name}`;
-                embed.embeds[0].description = `**Swept:**  ${Util.displayBNasFloat(harvests[i].available, harvests[i].wantDecimals, 5)} **${harvests[i].wantSymbol}**\n`+
-                `**Value**:  $${Util.displayBNasFloat(harvests[i].availableUSD, 18, 2)}`;         
+                embed.embeds[0].description = `**Swept:**  ${Util.displayBNasFloat(harvests[i].available, harvests[i].wantDecimals, 5)} **${harvests[i].wantSymbol}**\n` +
+                    `**Value**:  $${Util.displayBNasFloat(harvests[i].availableUSD, 18, 2)}`;
             } else if (event.leverage) {
                 embed.embeds[0].title = `Strategy: ${harvests[i].name}`;
                 embed.embeds[0].description = `**Leveraged**`;
@@ -582,8 +604,8 @@ async function discordUpdate({ results, harvests }) {
 
             if (embed.embeds[0].title) {
                 await axios({
-                    url:CONFIG.DISCORD.WEBHOOK_URL,
-                    method:'post',
+                    url: CONFIG.DISCORD.WEBHOOK_URL,
+                    method: 'post',
                     data: JSON.stringify(embed),
                     headers: {
                         'Content-Type': "application/json"

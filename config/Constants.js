@@ -14,7 +14,10 @@ const Constants = {
     MAX_GAS_LIMIT_HARV: 1000000,
     MAX_GAS_LIMIT_LEV: 2500000,
     MAX_GAS_PRICE: 100000000000,
-    RPC_LINK: 'https://node.snowapi.net/ext/bc/C/rpc'
+    PROVIDERS_URL:[
+        'https://node.snowapi.net/ext/bc/C/rpc',
+        'https://api.avax.network/ext/bc/C/rpc'
+    ] //this is by order of prefference
 };
 
 module.exports = Constants;
