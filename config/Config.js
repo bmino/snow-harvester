@@ -8,8 +8,8 @@ const Config = {
     },
     EXECUTION: {
         ENABLED: true,
-        INTERVAL: 1 * HOUR,
-        INTERVAL_WINDOW: 30 * MINUTE,
+        INTERVAL: 30 * MINUTE,
+        INTERVAL_WINDOW: 15 * MINUTE,
         CONTAINER_MODE: true
     },
     DISCORD: {
