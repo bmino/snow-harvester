@@ -430,7 +430,10 @@ const executeTx = async (harvest, decision, tx, type) => {
     if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would ${type} strategy ${harvest.name} (${harvest.strategy.address}). Set CONFIG.EXECUTION.ENABLED to enable harvesting`);
     console.log(`${type} strategy address: ${harvest.strategy.address} (${harvest.name}) ...`);
     try {
-        const transaction = await tx({ gasLimit: 7_000_000 });
+        //add extra gas to be safe
+        const plusGas = ethers.utils.parseUnits("5",9);
+        const gasPrice = (await provider.getGasPrice()).add(plusGas);
+        const transaction = await tx({ gasLimit: 7_000_000, gasPrice: gasPrice });
         const finishedTx = await transaction.wait(1);
         return finishedTx;
     } catch (error) {
