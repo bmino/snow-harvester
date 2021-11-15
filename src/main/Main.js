@@ -14,7 +14,8 @@ const {
     MAX_GAS_LIMIT_LEV,
     MAX_GAS_LIMIT_HARV,
     MAX_GAS_PRICE,
-    PROVIDERS_URL
+    PROVIDERS_URL,
+    AXIAL_ADDRESS
 } = require('../../config/Constants');
 const { ethers } = require('ethers');
 
@@ -154,10 +155,13 @@ async function initHarvests() {
 
 async function addRequirements(harvests) {
     const priceMap = async (harvest) => {
-        switch (harvest.wantSymbol) {
-            case 'WAVAX': case 'PNG': return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
-            case 'PGL': return await estimatePriceOfAsset(PNG_ADDRESS, 18);
-            case 'JLP': case 'xJOE': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
+        if (harvest.type !== "AXIAL") {
+            switch (harvest.wantSymbol) {
+                case 'WAVAX': case 'PNG': return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+                case 'PGL': return await estimatePriceOfAsset(PNG_ADDRESS, 18);
+                case 'JLP': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
+                case 'xJOE': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
+            }
         }
 
         switch (harvest.type) {
@@ -167,6 +171,8 @@ async function addRequirements(harvests) {
                 return await estimatePriceOfAsset(JOE_ADDRESS, 18);
             case 'AAVE':
                 return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+            case 'AXIAL':
+                return await estimatePriceOfAsset(AXIAL_ADDRESS, 18);
             default:
                 return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
         }
@@ -699,7 +705,12 @@ async function initializeContracts(controllerAddresses, snowglobeAddress) {
                         await strategyContract.jToken();
                         type = 'BANKER';
                     } catch (error) {
-                        type = 'ERC20';
+                        try {
+                            await strategyContract.masterChefAxialV3();
+                            type = 'AXIAL';
+                        } catch (error) {
+                            type = 'ERC20';
+                        }
                     }
                 }
             }
