@@ -186,6 +186,8 @@ async function addRequirements(harvests) {
                 return "WAVAX";
             case 'BANKER':
                 return "JOE";
+            case 'AXIAL':
+                return "AXIAL";
         }
         switch (harvest.wantSymbol) {
             case 'PGL': return 'PNG';
