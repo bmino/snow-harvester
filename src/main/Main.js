@@ -154,14 +154,16 @@ async function initHarvests() {
 }
 
 async function addRequirements(harvests) {
-    const priceMap = async (harvest) => {
-        if (harvest.type !== "AXIAL") {
-            switch (harvest.wantSymbol) {
-                case 'WAVAX': case 'PNG': return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
-                case 'PGL': return await estimatePriceOfAsset(PNG_ADDRESS, 18);
-                case 'JLP': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
-                case 'xJOE': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
-            }
+    const priceMap = async (harvest, isAxial) => {
+        if(isAxial) {
+            return await estimatePriceOfAsset(AXIAL_ADDRESS, 18);
+        }
+
+         switch (harvest.wantSymbol) {
+            case 'WAVAX': case 'PNG': return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+            case 'PGL': return await estimatePriceOfAsset(PNG_ADDRESS, 18);
+            case 'JLP': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
+            case 'xJOE': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
         }
 
         switch (harvest.type) {
@@ -171,14 +173,16 @@ async function addRequirements(harvests) {
                 return await estimatePriceOfAsset(JOE_ADDRESS, 18);
             case 'AAVE':
                 return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
-            case 'AXIAL':
-                return await estimatePriceOfAsset(AXIAL_ADDRESS, 18);
             default:
                 return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
         }
     }
 
-    const rewardMap = (harvest) => {
+    const rewardMap = (harvest, isAxial) => {
+        if(isAxial) {
+            return "AXIAL";
+        }
+
         switch (harvest.type) {
             case 'BENQI':
                 return "QI";
@@ -186,8 +190,6 @@ async function addRequirements(harvests) {
                 return "WAVAX";
             case 'BANKER':
                 return "JOE";
-            case 'AXIAL':
-                return "AXIAL";
         }
         switch (harvest.wantSymbol) {
             case 'PGL': return 'PNG';
@@ -198,8 +200,16 @@ async function addRequirements(harvests) {
     };
 
     const addHarvestFees = async (harvest) => {
-        if (!priceMap(harvest) ||
-            !rewardMap(harvest)) {
+        let isAxial = false;
+        try {
+            await harvest.strategy.masterChefAxialV3();
+            isAxial = true;
+        } catch (error) {
+            //not axial pool
+        }
+
+        if (!priceMap(harvest, isAxial) ||
+            !rewardMap(harvest, isAxial)) {
             throw new Error(`Unknown symbol: ${harvest.wantSymbol}`);
         }
 
@@ -231,7 +241,7 @@ async function addRequirements(harvests) {
             ...harvest,
             harvestable,
             harvestOverride,
-            harvestSymbol: rewardMap(harvest),
+            harvestSymbol: rewardMap(harvest, isAxial),
             keep,
             keepMax,
             treasuryFee: ethers.BigNumber.from(await harvest.strategy.performanceTreasuryFee()),
@@ -239,7 +249,7 @@ async function addRequirements(harvests) {
             balance: await harvest.snowglobe.balance(),
             available: await harvest.snowglobe.available(),
             priceWAVAX: await priceMap({ type: 'ERC20', wantSymbol: 'WAVAX' }),
-            rewardPrice: await priceMap(harvest),
+            rewardPrice: await priceMap(harvest, isAxial),
             priceWant: harvest.type === 'LP' ? await getPoolShareAsUSD(harvest.want) : await estimatePriceOfAsset(harvest.wantAddress, harvest.wantDecimals),
         }
     };
@@ -707,12 +717,7 @@ async function initializeContracts(controllerAddresses, snowglobeAddress) {
                         await strategyContract.jToken();
                         type = 'BANKER';
                     } catch (error) {
-                        try {
-                            await strategyContract.masterChefAxialV3();
-                            type = 'AXIAL';
-                        } catch (error) {
-                            type = 'ERC20';
-                        }
+                        type = 'ERC20';
                     }
                 }
             }
