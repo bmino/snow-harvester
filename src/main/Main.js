@@ -250,7 +250,9 @@ async function addRequirements(harvests) {
             available: await harvest.snowglobe.available(),
             priceWAVAX: await priceMap({ type: 'ERC20', wantSymbol: 'WAVAX' }),
             rewardPrice: await priceMap(harvest, isAxial),
-            priceWant: harvest.type === 'LP' ? await getPoolShareAsUSD(harvest.want) : await estimatePriceOfAsset(harvest.wantAddress, harvest.wantDecimals),
+            priceWant: harvest.type === 'LP'
+            ? await getPoolShareAsUSD(harvest.want) 
+            : await estimatePriceOfAsset(harvest.wantAddress, harvest.wantDecimals, isAxial),
         }
     };
     return await Promise.all(harvests.map(addHarvestFees))
@@ -781,7 +783,11 @@ async function getPoolShareAsUSD(poolContract) {
 
 }
 
-async function estimatePriceOfAsset(assetAddress, assetDecimals) {
+async function estimatePriceOfAsset(assetAddress, assetDecimals, isAxial = false) {
+    if(isAxial){
+        const virtualPrice = ethers.utils.parseUnits("1",18);
+        return virtualPrice;
+    }
     const { ROUTER, ROUTE } = VALUATION(assetAddress);
     const destination = ROUTE[ROUTE.length - 1];
     const destinationContract = new ethers.Contract(destination, ABI.ERC20, signer);
