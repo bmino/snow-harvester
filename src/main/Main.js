@@ -441,15 +441,16 @@ function addDecisions(harvests) {
         if (harvest.leverageTx && harvest.syncTx && harvest.deleverageTx) {
             //if it's not safe we want to drop some of leveraging
             if(harvest.poolState) {
+                const shouldLeverage = harvest.poolState.dailyAPR > MIN_APR_TO_LEVERAGE;
                 if(harvest.currLev > 1){
-                    if(harvest.poolState.deprecated || harvest.poolState.dailyAPR < MIN_APR_TO_LEVERAGE){
+                    if(harvest.poolState.deprecated || !shouldLeverage){
                         //we shouldn't be leveraging this pool!
                         deleverageDecision = true;
                     } else if (harvest.notSafe) {
                         syncDecision = true;
                     }
                 }
-                if(!deleverageDecision && !syncDecision) {
+                if(!deleverageDecision && !syncDecision && shouldLeverage) {
                     if (harvest.unleveragedSupply.lte(harvest.idealSupply)) {
                         //if it's safe we gonna leverage
                         leverageDecision = true;
