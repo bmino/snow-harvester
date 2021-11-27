@@ -372,7 +372,7 @@ async function addDeleverageTx(harvests) {
                 const poolState = await getPoolAPIInfo(harvest.snowglobe.address);
                 const deposited = await strategyUnsigned.balanceOfPool();
                 const supplied = await strategyUnsigned.getSuppliedView();
-                const currLev = (supplied / 10 ** harvest.wantDecimals) / (deposited / 10 ** harvest.wantDecimals);
+                const currLev = supplied / deposited;
 
                 const notSafe = await strategyUnsigned.callStatic["sync()"]({ from: CONFIG.WALLET.ADDRESS, gasLimit: 7_000_000 });
                 const estGasSync = await strategyUnsigned.estimateGas.sync({ from: CONFIG.WALLET.ADDRESS });
@@ -447,7 +447,10 @@ function addDecisions(harvests) {
                         deleverageDecision = true;
                     } else if (harvest.notSafe) {
                         syncDecision = true;
-                    } else if (harvest.unleveragedSupply.lte(harvest.idealSupply)) {
+                    }
+                }
+                if(!deleverageDecision && !syncDecision) {
+                    if (harvest.unleveragedSupply.lte(harvest.idealSupply)) {
                         //if it's safe we gonna leverage
                         leverageDecision = true;
                     }
