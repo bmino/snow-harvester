@@ -662,6 +662,9 @@ async function discordUpdate({ results, harvests }) {
         if (harvests[i].leverageDecision && results.leverage[i]) {
             notifList.push({ leverage: true, txHash: results.leverage[i]?.transactionHash });
         }
+        if (harvests[i].syncDecision && results.sync[i]) {
+            notifList.push({ sync: true, txHash: results.sync[i]?.transactionHash });
+        }
         if (harvests[i].deleverageDecision && results.deleverage[i]) {
             notifList.push({ deleverage: true, txHash: results.deleverage[i]?.transactionHash });
         }
