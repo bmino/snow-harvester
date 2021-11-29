@@ -379,7 +379,7 @@ async function addDeleverageTx(harvests) {
                 const estGasDeleverageToMin = await strategyUnsigned.estimateGas.deleverageToMin({ from: CONFIG.WALLET.ADDRESS });
 
                 const syncTx = harvest.strategy.sync;
-                const deleverageTx = harvest.strategy.deleverageToMin;
+                const deleverageTx = harvest.strategy.deleverageUntil;
 
                 const syncGas = estGasSync > MAX_GAS_LIMIT_HARV ? estGasSync : MAX_GAS_LIMIT_HARV;
                 const deleverageGas = estGasDeleverageToMin > MAX_GAS_LIMIT_HARV ? estGasDeleverageToMin : MAX_GAS_LIMIT_HARV;
@@ -441,15 +441,14 @@ function addDecisions(harvests) {
         if (harvest.leverageTx && harvest.syncTx && harvest.deleverageTx) {
             //if it's not safe we want to drop some of leveraging
             if(harvest.poolState) {
-                const shouldLeverage = harvest.poolState.dailyAPR > MIN_APR_TO_LEVERAGE;
-                if(harvest.currLev > 1){
-                    if(harvest.poolState.deprecated || !shouldLeverage){
-                        //we shouldn't be leveraging this pool!
-                        deleverageDecision = true;
-                    } else if (harvest.notSafe) {
-                        syncDecision = true;
-                    }
+                const shouldLeverage = (harvest.poolState.dailyAPR > MIN_APR_TO_LEVERAGE && !harvest.poolState.deprecated);
+                console.log(harvest.currLev, harvest.notSafe)
+                if(harvest.currLev > 1.2 && !shouldLeverage){
+                    //we shouldn't be leveraging this pool!
+                    deleverageDecision = true;
                 }
+                syncDecision = (!deleverageDecision && harvest.notSafe);
+
                 if(!deleverageDecision && !syncDecision && shouldLeverage) {
                     if (harvest.unleveragedSupply.lte(harvest.idealSupply)) {
                         //if it's safe we gonna leverage
@@ -457,7 +456,7 @@ function addDecisions(harvests) {
                     }
                 }
             } else {
-                if(harvest.currLev > 1){
+                if(harvest.currLev > 1.2){
                     //if can't find the pool just deleverage stuff for safety
                     deleverageDecision = true;
                 }
@@ -480,7 +479,7 @@ function addDecisions(harvests) {
     return harvests.map(obj => addHarvestDecision(obj));
 }
 
-const executeTx = async (harvest, decision, tx, type) => {
+const executeTx = async (harvest, decision, tx, type, params = []) => {
     if (!decision) return null;
     if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would ${type} strategy ${harvest.name} (${harvest.strategy.address}). Set CONFIG.EXECUTION.ENABLED to enable harvesting`);
     console.log(`${type} strategy address: ${harvest.strategy.address} (${harvest.name}) ...`);
@@ -488,7 +487,12 @@ const executeTx = async (harvest, decision, tx, type) => {
         //add extra gas to be safe
         const plusGas = ethers.utils.parseUnits("5",9);
         const gasPrice = (await provider.getGasPrice()).add(plusGas);
-        const transaction = await tx({ gasLimit: 7_000_000, gasPrice: gasPrice });
+        let transaction
+        if(params.length > 0){
+            transaction = await tx(...params,{ gasLimit: 7_000_000, gasPrice: gasPrice });
+        }else{
+            transaction = await tx({ gasLimit: 7_000_000, gasPrice: gasPrice });
+        }
         const finishedTx = await transaction.wait(1);
         return finishedTx;
     } catch (error) {
@@ -562,7 +566,19 @@ async function doDeleveraging(payload) {
 
     let results = [];
     for (const harvest of payload.harvests) {
-        results.push(await executeTx(harvest, harvest.deleverageDecision, harvest.deleverageTx, "Deleverage"));
+        let params = [];
+        if(harvest.deleverageDecision) {
+            const deposited = await harvest.strategy.balanceOfPool();
+            const BNSupply = floatToBN((deposited / 10 ** harvest.wantDecimals) * 1.01, harvest.wantDecimals);
+            params = [BNSupply];
+            console.log(harvest.name,harvest.type);
+            console.log(deposited/ 10 ** harvest.wantDecimals,params[0]/ 10 ** harvest.wantDecimals);
+        }
+        results.push(
+                await executeTx(
+                    harvest, harvest.deleverageDecision, harvest.deleverageTx, "Deleverage", params
+                )
+            );
     }
 
     logResults({ results, harvests: payload.harvests, type: "Deleverage" });
@@ -895,3 +911,26 @@ async function getPoolAPIInfo(snowglobeAddres) {
         console.error(error); 
     }
 }
+
+const roundDown = (value, decimals = 18) => {
+    const valueString = value.toString();
+    const integerString = valueString.split('.')[0];
+    const decimalsString = valueString.split('.')[1];
+    if (!decimalsString) {
+      return integerString
+    }
+    return `${integerString}.${decimalsString.slice(0, decimals)}`;
+  }
+
+const floatToBN = (number, decimals = 18) => {
+    try{
+      if(number > 0){
+        return ethers.utils.parseUnits(roundDown(number,decimals),decimals);
+      }else{
+        return ethers.utils.parseUnits("0");
+      }
+    }catch(error){
+      console.error(error.message);
+    }
+  }
+  
