@@ -15,7 +15,8 @@ const {
     MAX_GAS_LIMIT_HARV,
     MAX_GAS_PRICE,
     PROVIDERS_URL,
-    AXIAL_ADDRESS
+    AXIAL_ADDRESS,
+    MIN_APR_TO_LEVERAGE
 } = require('../../config/Constants');
 const { ethers } = require('ethers');
 
@@ -71,6 +72,7 @@ function harvest() {
         .then(doHarvesting)
         .then(doEarning)
         .then(doLeveraging)
+        .then(doSync)
         .then(doDeleveraging)
         .then(sendDiscord)
         .then(() => {
@@ -367,23 +369,36 @@ async function addDeleverageTx(harvests) {
                 const unleveragedSupply = await strategyUnsigned.callStatic["getSuppliedUnleveraged()"]({ from: CONFIG.WALLET.ADDRESS, gasLimit: 7_000_000 });
                 const idealSupply = await strategyUnsigned.callStatic["getLeveragedSupplyTarget(uint256)"](unleveragedSupply, { from: CONFIG.WALLET.ADDRESS, gasLimit: 7_000_000 });
 
-                const notSafe = await strategyUnsigned.callStatic["sync()"]({ from: CONFIG.WALLET.ADDRESS, gasLimit: 7_000_000 });
-                const estGas = await strategyUnsigned.estimateGas.sync({ from: CONFIG.WALLET.ADDRESS });
+                const poolState = await getPoolAPIInfo(harvest.snowglobe.address);
+                const deposited = await strategyUnsigned.balanceOfPool();
+                const supplied = await strategyUnsigned.getSuppliedView();
+                const currLev = supplied / deposited;
 
-                const deLeverageTx = harvest.strategy.sync;
-                const deLeverageGas = estGas > MAX_GAS_LIMIT_HARV ? estGas : MAX_GAS_LIMIT_HARV;
+                const notSafe = await strategyUnsigned.callStatic["sync()"]({ from: CONFIG.WALLET.ADDRESS, gasLimit: 7_000_000 });
+                const estGasSync = await strategyUnsigned.estimateGas.sync({ from: CONFIG.WALLET.ADDRESS });
+                const estGasDeleverageToMin = await strategyUnsigned.estimateGas.deleverageToMin({ from: CONFIG.WALLET.ADDRESS });
+
+                const syncTx = harvest.strategy.sync;
+                const deleverageTx = harvest.strategy.deleverageUntil;
+
+                const syncGas = estGasSync > MAX_GAS_LIMIT_HARV ? estGasSync : MAX_GAS_LIMIT_HARV;
+                const deleverageGas = estGasDeleverageToMin > MAX_GAS_LIMIT_HARV ? estGasDeleverageToMin : MAX_GAS_LIMIT_HARV;
                 return {
                     ...harvest,
-                    deLeverageTx,
+                    syncTx,
+                    deleverageTx,
                     unleveragedSupply,
                     idealSupply,
                     notSafe,
-                    deLeverageGas: ethers.BigNumber.from(deLeverageGas), //await leverageTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
+                    syncGas: ethers.BigNumber.from(syncGas),
+                    deleverageGas: ethers.BigNumber.from(deleverageGas),
+                    currLev,
+                    poolState
                 }
             } catch (error) {
                 console.log(harvest.name);
                 console.log(error.message);
-                //cant be deleveraged
+                //cant be synced or deleveraged
                 return { ...harvest };
             }
         } else {
@@ -410,42 +425,61 @@ function addDecisions(harvests) {
             gain = harvest.gainWAVAX.mul(harvest.keep).div(harvest.keepMax);
         }
         const TWO_HUNDRED_USD = ethers.BigNumber.from('200' + '0'.repeat(18));
-        let harvestDecision = cost.lt(gain) || harvest.harvestOverride
-            || harvest.type === "BANKER" || harvest.type === "AAVE" || harvest.type === "BENQI";
+        const isFolding = (harvest.type === "BANKER" || harvest.type === "AAVE" || harvest.type === "BENQI");
+
+        let harvestDecision = cost.lt(gain) 
+        || harvest.harvestOverride 
+        || (isFolding && harvest.poolState && !harvest.poolState.deprecated)
+           
         if (harvest.harvestOverride && !cost.lt(gain)) {
             console.log(`Harvest decision overridden by flag!`);
         }
 
         let earnDecision = harvest.ratio.gte(1) && harvest.availableUSD.gt(TWO_HUNDRED_USD);
 
-        let leverageDecision = false, deLeverageDecision = false;
-        //disabled banker joe for now
-        if (harvest.leverageTx && harvest.deLeverageTx) {
+        let leverageDecision = false, syncDecision = false, deleverageDecision = false;
+        if (harvest.leverageTx && harvest.syncTx && harvest.deleverageTx) {
             //if it's not safe we want to drop some of leveraging
-            if (harvest.notSafe) {
-                deLeverageDecision = true;
-            } else if (harvest.unleveragedSupply.lte(harvest.idealSupply)) {
-                //if it's safe we gonna leverage
-                leverageDecision = true;
+            if(harvest.poolState) {
+                const shouldLeverage = (harvest.poolState.dailyAPR > MIN_APR_TO_LEVERAGE && !harvest.poolState.deprecated);
+                console.log(harvest.currLev, harvest.notSafe)
+                if(harvest.currLev > 1.2 && !shouldLeverage){
+                    //we shouldn't be leveraging this pool!
+                    deleverageDecision = true;
+                }
+                syncDecision = (!deleverageDecision && harvest.notSafe);
+
+                if(!deleverageDecision && !syncDecision && shouldLeverage) {
+                    if (harvest.unleveragedSupply.lte(harvest.idealSupply)) {
+                        //if it's safe we gonna leverage
+                        leverageDecision = true;
+                    }
+                }
+            } else {
+                if(harvest.currLev > 1.2){
+                    //if can't find the pool just deleverage stuff for safety
+                    deleverageDecision = true;
+                }
             }
         }
         console.log(`Harvest decision: ${harvestDecision}`);
         console.log(`Earn decision: ${earnDecision}`);
         console.log(`Leverage decision: ${leverageDecision}`);
-        console.log(`De-leverage decision: ${deLeverageDecision}`);
+        console.log(`Sync decision: ${syncDecision}`);
+        console.log(`Deleverage decision: ${deleverageDecision}`);
         return {
             ...harvest,
             harvestDecision,
             earnDecision,
             leverageDecision,
-            deLeverageDecision
+            deleverageDecision,
+            syncDecision
         };
     };
     return harvests.map(obj => addHarvestDecision(obj));
 }
 
-
-const executeTx = async (harvest, decision, tx, type) => {
+const executeTx = async (harvest, decision, tx, type, params = []) => {
     if (!decision) return null;
     if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would ${type} strategy ${harvest.name} (${harvest.strategy.address}). Set CONFIG.EXECUTION.ENABLED to enable harvesting`);
     console.log(`${type} strategy address: ${harvest.strategy.address} (${harvest.name}) ...`);
@@ -453,7 +487,12 @@ const executeTx = async (harvest, decision, tx, type) => {
         //add extra gas to be safe
         const plusGas = ethers.utils.parseUnits("5",9);
         const gasPrice = (await provider.getGasPrice()).add(plusGas);
-        const transaction = await tx({ gasLimit: 7_000_000, gasPrice: gasPrice });
+        let transaction
+        if(params.length > 0){
+            transaction = await tx(...params,{ gasLimit: 7_000_000, gasPrice: gasPrice });
+        }else{
+            transaction = await tx({ gasLimit: 7_000_000, gasPrice: gasPrice });
+        }
         const finishedTx = await transaction.wait(1);
         return finishedTx;
     } catch (error) {
@@ -507,12 +546,39 @@ async function doLeveraging(payload) {
     return payload;
 }
 
+async function doSync(payload) {
+    await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning earn() calls for the provider to sync the nonce
+
+    let results = [];
+    for (const harvest of payload.harvests) {
+        results.push(await executeTx(harvest, harvest.syncDecision, harvest.syncTx, "Sync"));
+    }
+
+    logResults({ results, harvests: payload.harvests, type: "Sync" });
+
+    payload.results.sync = results;
+
+    return payload;
+}
+
 async function doDeleveraging(payload) {
     await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning earn() calls for the provider to sync the nonce
 
     let results = [];
     for (const harvest of payload.harvests) {
-        results.push(await executeTx(harvest, harvest.deLeverageDecision, harvest.deLeverageTx, "Deleverage"));
+        let params = [];
+        if(harvest.deleverageDecision) {
+            const deposited = await harvest.strategy.balanceOfPool();
+            const BNSupply = floatToBN((deposited / 10 ** harvest.wantDecimals) * 1.01, harvest.wantDecimals);
+            params = [BNSupply];
+            console.log(harvest.name,harvest.type);
+            console.log(deposited/ 10 ** harvest.wantDecimals,params[0]/ 10 ** harvest.wantDecimals);
+        }
+        results.push(
+                await executeTx(
+                    harvest, harvest.deleverageDecision, harvest.deleverageTx, "Deleverage", params
+                )
+            );
     }
 
     logResults({ results, harvests: payload.harvests, type: "Deleverage" });
@@ -550,8 +616,13 @@ function logResults(params) {
                     continue;
                 }
                 break;
+            case "Sync":
+                if (!harvest.syncDecision) {
+                    continue;
+                }
+                break;
             case "Deleverage":
-                if (!harvest.deLeverageDecision) {
+                if (!harvest.deleverageDecision) {
                     continue;
                 }
                 break;
@@ -591,7 +662,10 @@ async function discordUpdate({ results, harvests }) {
         if (harvests[i].leverageDecision && results.leverage[i]) {
             notifList.push({ leverage: true, txHash: results.leverage[i]?.transactionHash });
         }
-        if (harvests[i].deLeverageDecision && results.deleverage[i]) {
+        if (harvests[i].syncDecision && results.sync[i]) {
+            notifList.push({ sync: true, txHash: results.sync[i]?.transactionHash });
+        }
+        if (harvests[i].deleverageDecision && results.deleverage[i]) {
             notifList.push({ deleverage: true, txHash: results.deleverage[i]?.transactionHash });
         }
 
@@ -620,6 +694,9 @@ async function discordUpdate({ results, harvests }) {
             } else if (event.leverage) {
                 embed.embeds[0].title = `Strategy: ${harvests[i].name}`;
                 embed.embeds[0].description = `**Leveraged**`;
+            } else if (event.sync) {
+                embed.embeds[0].title = `Strategy: ${harvests[i].name}`;
+                embed.embeds[0].description = `**Synced**`;
             } else if (event.deleverage) {
                 embed.embeds[0].title = `Strategy: ${harvests[i].name}`;
                 embed.embeds[0].description = `**Deleveraged**`;
@@ -808,3 +885,55 @@ async function estimatePriceOfAsset(assetAddress, assetDecimals, isAxial = false
     }
     return price;
 }
+
+async function getPoolAPIInfo(snowglobeAddres) {
+    const data = JSON.stringify({
+      query: 
+      `{
+            PoolsInfoByAddress(address: "${snowglobeAddres}"){
+                dailyAPR
+                deprecated
+            }
+        }`,
+      variables: {}
+    });
+    
+    const config = {
+      method: 'post',
+      url: 'https://api.snowapi.net/graphql',
+      headers: { 
+        'Content-Type': 'application/json'
+      },
+      data : data
+    };
+    
+    try {
+        const query = await axios(config);
+        return query.data.data.PoolsInfoByAddress;
+    } catch (error) {
+        console.error(error); 
+    }
+}
+
+const roundDown = (value, decimals = 18) => {
+    const valueString = value.toString();
+    const integerString = valueString.split('.')[0];
+    const decimalsString = valueString.split('.')[1];
+    if (!decimalsString) {
+      return integerString
+    }
+    return `${integerString}.${decimalsString.slice(0, decimals)}`;
+  }
+
+const floatToBN = (number, decimals = 18) => {
+    try{
+      if(number > 0){
+        return ethers.utils.parseUnits(roundDown(number,decimals),decimals);
+      }else{
+        return ethers.utils.parseUnits("0");
+      }
+    }catch(error){
+      console.error(error.message);
+    }
+  }
+  
