@@ -7,6 +7,8 @@ const Wants = {
     '0x53B37b9A6631C462d74D65d61e1c056ea9dAa637',
     '0xbBA0f8A3Aa16657D1df2A6E87A73ee74Fec42711', // Deprecated
     '0x7b74324f523831687fC8FCE946F15a3AA632dC06', // broken benqi wavax
+    '0x68b8037876385BBd6bBe80bAbB2511b95DA372C4', // broken benqi qi
+    '0x59C7b6E757CA14EF6F47e06A30B74CaE1017D92C'  // broken teddyxteddy
   ],
 
   OVERRIDE_ADD: [
@@ -14,6 +16,8 @@ const Wants = {
   ],
 
   CONTROLLERS: [
+    '0x252B5fD3B1Cb07A2109bF36D5bDE6a247c6f4B59', // BENQI second Controller
+    '0xF2FA11Fc9247C23b3B622C41992d8555f6D01D8f', // new BANKER JOE controller
     '0xACc69DEeF119AB5bBf14e6Aaf0536eAFB3D6e046', // second deployment (must come first to supersede other controller
     '0xc7D536a04ECC43269B6B95aC1ce0a06E0000D095', // AXIAL Controller
     '0x425A863762BBf24A986d8EaE2A367cb514591C6F', // AAVE Controller

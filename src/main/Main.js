@@ -16,7 +16,8 @@ const {
     MAX_GAS_PRICE,
     PROVIDERS_URL,
     AXIAL_ADDRESS,
-    MIN_APR_TO_LEVERAGE
+    MIN_APR_TO_LEVERAGE,
+    TEDDY_ADDRESS
 } = require('../../config/Constants');
 const { ethers } = require('ethers');
 
@@ -162,8 +163,8 @@ async function addRequirements(harvests) {
         }
 
          switch (harvest.wantSymbol) {
-            case 'WAVAX': case 'PNG': return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
-            case 'PGL': return await estimatePriceOfAsset(PNG_ADDRESS, 18);
+            case 'WAVAX': return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+            case 'PGL': case 'PNG': return await estimatePriceOfAsset(PNG_ADDRESS, 18);
             case 'JLP': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
             case 'xJOE': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
         }
@@ -175,6 +176,8 @@ async function addRequirements(harvests) {
                 return await estimatePriceOfAsset(JOE_ADDRESS, 18);
             case 'AAVE':
                 return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+            case 'TEDDY':
+                return await estimatePriceOfAsset(TEDDY_ADDRESS, 18);
             default:
                 return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
         }
@@ -192,11 +195,12 @@ async function addRequirements(harvests) {
                 return "WAVAX";
             case 'BANKER':
                 return "JOE";
+            case 'TEDDY':
+                return "TEDDY";
         }
         switch (harvest.wantSymbol) {
-            case 'PGL': return 'PNG';
+            case 'PGL':case 'PNG': return 'PNG';
             case 'JLP': return 'JOE';
-            case 'PNG': return 'WAVAX';
             default: return harvest.wantSymbol;
         }
     };
@@ -430,6 +434,8 @@ function addDecisions(harvests) {
         let harvestDecision = cost.lt(gain) 
         || harvest.harvestOverride 
         || (isFolding && harvest.poolState && !harvest.poolState.deprecated)
+        || harvest.name === "AA3D" //ORCA rewards make for this pool
+        || harvest.name === "QI" //added QI manually because the benqi rewarder contract have a bad view of pending rewards
            
         if (harvest.harvestOverride && !cost.lt(gain)) {
             console.log(`Harvest decision overridden by flag!`);
@@ -796,7 +802,13 @@ async function initializeContracts(controllerAddresses, snowglobeAddress) {
                         await strategyContract.jToken();
                         type = 'BANKER';
                     } catch (error) {
-                        type = 'ERC20';
+                        try {
+                            //test if this is from teddy
+                            await strategyContract.stake_teddy_rewards();
+                            type = 'TEDDY';
+                        } catch (error) {
+                            type = 'ERC20';
+                        }
                     }
                 }
             }
