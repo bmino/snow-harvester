@@ -177,7 +177,7 @@ async function addRequirements(harvests) {
             case 'AAVE':
                 return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
             case 'TEDDY':
-                return await estimatePriceOfAsset(TEDDY_ADDRESS, 18);
+                return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
             default:
                 return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
         }
@@ -196,7 +196,7 @@ async function addRequirements(harvests) {
             case 'BANKER':
                 return "JOE";
             case 'TEDDY':
-                return "TEDDY";
+                return "WAVAX";
         }
         switch (harvest.wantSymbol) {
             case 'PGL':case 'PNG': return 'PNG';
