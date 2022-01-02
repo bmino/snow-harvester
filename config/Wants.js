@@ -16,13 +16,14 @@ const Wants = {
   ],
 
   CONTROLLERS: [
+    '0xCEB829a0881350689dAe8CBD77D0E012cf7a6a3f', // New trader joe controller
     '0x252B5fD3B1Cb07A2109bF36D5bDE6a247c6f4B59', // BENQI second Controller
     '0xF2FA11Fc9247C23b3B622C41992d8555f6D01D8f', // new BANKER JOE controller
     '0xACc69DEeF119AB5bBf14e6Aaf0536eAFB3D6e046', // second deployment (must come first to supersede other controller
-    '0xc7D536a04ECC43269B6B95aC1ce0a06E0000D095', // AXIAL Controller
     '0x425A863762BBf24A986d8EaE2A367cb514591C6F', // AAVE Controller
     '0x8Ffa3c1547479B77D9524316D5192777bedA40a1', // BENQI Controller
     '0xf7B8D9f8a82a7a6dd448398aFC5c77744Bd6cb85', // first deployment
+    '0xc7D536a04ECC43269B6B95aC1ce0a06E0000D095', // AXIAL Controller
     '0xFb7102506B4815a24e3cE3eAA6B834BE7a5f2807', // Banker Joe Controller
   ],
   
