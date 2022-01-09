@@ -135,7 +135,7 @@ async function initHarvests() {
     }
 
     const results = [];
-    await Promise.all(snowglobes.map(async snowglobeAddress => {
+    for(const snowglobeAddress of snowglobes){
         try {
             const { controller, want, snowglobe, strategy, type, wantAddress, strategyName } = await initializeContracts(WANTS.CONTROLLERS, snowglobeAddress);
             const snowglobeSymbol = await snowglobe.symbol();
@@ -175,7 +175,7 @@ async function initHarvests() {
         } catch (error) {
             console.log(error.message);
         }
-    }))
+    }
     return results;
 }
 
