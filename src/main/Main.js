@@ -17,11 +17,14 @@ const {
     PROVIDERS_URL,
     AXIAL_ADDRESS,
     MIN_APR_TO_LEVERAGE,
-    TEDDY_ADDRESS
+    TEDDY_ADDRESS,
+    TJ_MASTERCHEF,
+    AXIAL_MASTERCHEF
 } = require('../../config/Constants');
 const { ethers } = require('ethers');
 
 var provider, signer;
+var masterchefPoolIds = [];
 
 // Authenticate our wallet
 if (CONFIG.EXECUTION.ENABLED) {
@@ -117,10 +120,24 @@ async function initHarvests() {
         console.error(err);
     };
 
+    const masterchefs = [AXIAL_MASTERCHEF, TJ_MASTERCHEF];
+
+    for (const address of masterchefs) {
+        const mcContract = new ethers.Contract(address, ABI.MASTERCHEF_V3, signer);
+        const poolLength = await mcContract.poolLength();
+
+        let arrayPoolInfo = [];
+        for (let i = 0; i < poolLength; i++) {
+            const poolInfo = await mcContract.poolInfo(i);
+            arrayPoolInfo.push(poolInfo);
+        }
+        masterchefPoolIds.push(arrayPoolInfo);
+    }
+
     const results = [];
-    for (const snowglobeAddress of snowglobes) {
+    await Promise.all(snowglobes.map(async snowglobeAddress => {
         try {
-            const { controller, want, snowglobe, strategy, type, wantAddress } = await initializeContracts(WANTS.CONTROLLERS, snowglobeAddress);
+            const { controller, want, snowglobe, strategy, type, wantAddress, strategyName } = await initializeContracts(WANTS.CONTROLLERS, snowglobeAddress);
             const snowglobeSymbol = await snowglobe.symbol();
             const wantSymbol = await want.symbol();
             const wantDecimals = parseInt(await want.decimals());
@@ -143,6 +160,7 @@ async function initHarvests() {
 
             results.push({
                 name,
+                strategyName,
                 type,
                 controller,
                 want,
@@ -157,7 +175,7 @@ async function initHarvests() {
         } catch (error) {
             console.log(error.message);
         }
-    }
+    }))
     return results;
 }
 
@@ -226,19 +244,47 @@ async function addRequirements(harvests) {
 
         let harvestable;
         let harvestOverride = false;
+        let addressBonusToken, harvestableBonusToken, bonusRewardPrice, decimalsBonusToken;
 
+        //account for extra rewards
         try {
             if (harvest.type === "AAVE") {
                 harvestable = await harvest.strategy.getWavaxAccrued();
             } else {
                 harvestable = await harvest.strategy.getHarvestable();
             }
-
         } catch (err) {
             // This fails for certain strategies where the strategy lacks a `rewarder`
             // Assuming the harvest should happen for now
             harvestable = ethers.BigNumber.from("0");
             harvestOverride = true;
+        }
+
+        try {
+            let masterchefAddress, poolInfo;
+            if (harvest.strategyName.startsWith("StrategyJoe")) {
+                masterchefAddress = TJ_MASTERCHEF;
+                poolInfo = getPoolInfo(harvest.wantAddress, masterchefAddress);
+
+            } else if (harvest.strategyName.startsWith("StrategyAxial")) {
+                masterchefAddress = AXIAL_MASTERCHEF;
+                poolInfo = getPoolInfo(harvest.wantAddress, masterchefAddress);
+            }
+
+            if (poolInfo && poolInfo.poolId > -1) {
+                const masterchefContract = new ethers.Contract(masterchefAddress, ABI.MASTERCHEF_V3, signer);
+                const strategyInfo = await masterchefContract.pendingTokens(poolInfo.poolId, harvest.strategy.address);
+                if (strategyInfo.pendingBonusToken.gt("0x0")) {
+                    addressBonusToken = strategyInfo.bonusTokenAddress;
+                    harvestableBonusToken = strategyInfo.pendingBonusToken;
+
+                    const bonusTokenContract = new ethers.Contract(addressBonusToken, ABI.ERC20, signer);
+                    decimalsBonusToken = await bonusTokenContract.decimals();
+                    bonusRewardPrice = await estimatePriceOfAsset(addressBonusToken, decimalsBonusToken);                
+                }
+            }
+        } catch (error) {
+            console.error(error);
         }
 
         var keep, keepMax;
@@ -264,6 +310,12 @@ async function addRequirements(harvests) {
             priceWant: harvest.type === 'LP'
                 ? await getPoolShareAsUSD(harvest.want)
                 : await estimatePriceOfAsset(harvest.wantAddress, harvest.wantDecimals, isAxial),
+            bonusToken: {
+                price: bonusRewardPrice,
+                address: addressBonusToken,
+                harvestable: harvestableBonusToken,
+                decimals: decimalsBonusToken
+            }
         }
     };
     return await Promise.all(harvests.map(addHarvestFees))
@@ -275,8 +327,25 @@ async function addRequirements(harvests) {
 
 function addCalculations(harvests) {
     const addHarvestGain = (harvest) => {
-        const gainWAVAX = harvest.harvestable.mul(harvest.rewardPrice).div(harvest.priceWAVAX);
-        const gainUSD = harvest.harvestable.mul(harvest.rewardPrice).div(Util.offset(18));
+        let gainWAVAX = harvest.harvestable.mul(harvest.rewardPrice).div(harvest.priceWAVAX);
+        let gainUSD = harvest.harvestable.mul(harvest.rewardPrice).div(Util.offset(18));
+
+        const bonusToken = harvest.bonusToken;
+        if (bonusToken.address) {
+
+            const correction = ethers.BigNumber.from(bonusToken.decimals - 18);
+            let harvestableCorrected = bonusToken.harvestable;
+            if (correction > 0) {
+                harvestableCorrected = bonusToken.harvestable.mul(ethers.BigNumber.from(10).pow(correction));
+            }
+
+            const gainWAVAXBonus = harvestableCorrected.mul(bonusToken.price).div(harvest.priceWAVAX);
+            const gainUSDBonus = harvestableCorrected.mul(bonusToken.price).div(Util.offset(18));
+
+            gainWAVAX = gainWAVAX.add(gainWAVAXBonus);
+            gainUSD = gainUSD.add(gainUSDBonus);
+        }
+
         const ratio = harvest.balance.isZero() ? ethers.BigNumber.from(100) : harvest.available.mul(100).div(harvest.balance);
         const adjust = (harvest.wantDecimals - 18);
         const availableUSD = harvest.available.mul(harvest.priceWant).div(Util.offset(18 + adjust));
@@ -439,8 +508,6 @@ function addDecisions(harvests) {
         let harvestDecision = cost.lt(gain)
             || harvest.harvestOverride
             || (isFolding && harvest.poolState && !harvest.poolState.deprecated)
-            || harvest.name === "AA3D" //ORCA rewards make for this pool
-            || harvest.name === "AC4D" //TEDDY rewards make for this pool
             || harvest.name === "QI" //added QI manually because the benqi rewarder contract have a bad view of pending rewards
 
         if (harvest.harvestOverride && !cost.lt(gain)) {
@@ -474,6 +541,7 @@ function addDecisions(harvests) {
                 }
             }
         }
+        console.log(harvest.type, harvest.name, gain / 1e18, cost / 1e18);
         console.log(`Harvest decision: ${harvestDecision}`);
         console.log(`Earn decision: ${earnDecision}`);
         console.log(`Leverage decision: ${leverageDecision}`);
@@ -786,6 +854,8 @@ async function initializeContracts(controllerAddresses, snowglobeAddress) {
         let type, poolToken = new ethers.Contract(wantAddress, ABI.UNI_V2_POOL, signer);
         const strategyContract = new ethers.Contract(strategyAddress, ABI.STRATEGY, signer);
 
+        const strategyName = await strategyContract.getName();
+
         try {
             //test if this is an LP Token
             await poolToken.token1();
@@ -826,6 +896,7 @@ async function initializeContracts(controllerAddresses, snowglobeAddress) {
             want: poolToken,
             wantAddress,
             type,
+            strategyName,
             strategy: strategyContract,
         };
     }
@@ -904,11 +975,11 @@ async function estimatePriceOfAsset(assetAddress, assetDecimals, isAxial = false
     return price;
 }
 
-async function getPoolAPIInfo(snowglobeAddres) {
+async function getPoolAPIInfo(snowglobeAddress) {
     const data = JSON.stringify({
         query:
             `{
-            PoolsInfoByAddress(address: "${snowglobeAddres}"){
+            PoolsInfoByAddress(address: "${snowglobeAddress}"){
                 dailyAPR
                 deprecated
             }
@@ -953,4 +1024,25 @@ const floatToBN = (number, decimals = 18) => {
     } catch (error) {
         console.error(error.message);
     }
+}
+
+const getPoolInfo = (want, mcAddress) => {
+    let arrayIndex = -1;
+    switch (mcAddress.toLowerCase()) {
+        case AXIAL_MASTERCHEF.toLowerCase():
+            arrayIndex = 0;
+            break;
+        case TJ_MASTERCHEF.toLowerCase():
+            arrayIndex = 1;
+            break;
+        default:
+            throw new Error("Masterchef not found");
+    }
+
+    const poolId = masterchefPoolIds[arrayIndex].findIndex(o => o.lpToken.toLowerCase() === want.toLowerCase());
+    const poolInfo = masterchefPoolIds[arrayIndex][poolId];
+    return {
+        poolId,
+        poolInfo
+    };
 }

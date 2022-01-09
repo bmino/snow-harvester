@@ -9,6 +9,8 @@ const Constants = {
     BENQI_ADDRESS: '0x8729438EB15e2C8B576fCc6AeCdA6A148776C0F5',
     TEDDY_ADDRESS: '0x094bd7B2D99711A1486FB94d4395801C6d0fdDcC',
     AXIAL_ADDRESS: '0xcF8419A615c57511807236751c0AF38Db4ba3351',
+    TJ_MASTERCHEF: '0x188bED1968b795d5c9022F6a0bb5931Ac4c18F00',
+    AXIAL_MASTERCHEF: '0x958C0d0baA8F220846d3966742D4Fb5edc5493D3',
 
     PANGOLIN_ROUTER: '0xE54Ca86531e17Ef3616d22Ca28b0D458b6C89106',
     JOE_ROUTER: '0x60aE616a2155Ee3d9A68541Ba4544862310933d4',
@@ -17,9 +19,9 @@ const Constants = {
     MAX_GAS_LIMIT_LEV: 2500000,
     MAX_GAS_PRICE: 100000000000,
     MIN_APR_TO_LEVERAGE: 0.011, //4% yearly
-    PROVIDERS_URL:[        
-        'https://node.snowapi.net/ext/bc/C/rpc',
-        'https://api.avax.network/ext/bc/C/rpc',
+    PROVIDERS_URL:[    
+        'https://node.snowapi.net/ext/bc/C/rpc',  
+        'https://api.avax.network/ext/bc/C/rpc',  
     ] //this is by order of prefference
 };
 
