@@ -19,7 +19,8 @@ const {
     MIN_APR_TO_LEVERAGE,
     TEDDY_ADDRESS,
     TJ_MASTERCHEF,
-    AXIAL_MASTERCHEF
+    AXIAL_MASTERCHEF,
+    QI_ADDRESS
 } = require('../../config/Constants');
 const { ethers } = require('ethers');
 
@@ -208,23 +209,47 @@ async function addRequirements(harvests) {
 
     const rewardMap = (harvest, isAxial) => {
         if (isAxial) {
-            return "AXIAL";
+            return {
+                symbol:"AXIAL",
+                address: AXIAL_ADDRESS
+            };
         }
 
         switch (harvest.type) {
             case 'BENQI':
-                return "QI";
+                return {
+                    symbol:"QI",
+                    address: QI_ADDRESS
+                };
             case 'AAVE':
-                return "WAVAX";
+                return {
+                    symbol:"WAVAX",
+                    address: WAVAX_ADDRESS
+                };
             case 'BANKER':
-                return "JOE";
+                return {
+                    symbol:"JOE",
+                    address: JOE_ADDRESS
+                };
             case 'TEDDY':
-                return "WAVAX";
+                return {
+                    symbol:"WAVAX",
+                    address: WAVAX_ADDRESS
+                };
         }
         switch (harvest.wantSymbol) {
-            case 'PGL': case 'PNG': return 'PNG';
-            case 'JLP': return 'JOE';
-            default: return harvest.wantSymbol;
+            case 'PGL': case 'PNG': return {
+                symbol:"PNG",
+                address: PNG_ADDRESS
+            };
+            case 'JLP': return {
+                symbol:"JOE",
+                address: JOE_ADDRESS
+            };
+            default: return {
+                symbol:harvest.wantSymbol,
+                address: harvest.wantAddress
+            };
         }
     };
 
@@ -252,6 +277,11 @@ async function addRequirements(harvests) {
                 harvestable = await harvest.strategy.getWavaxAccrued();
             } else {
                 harvestable = await harvest.strategy.getHarvestable();
+                
+                const harvestedToken = rewardMap(harvest, isAxial);
+                const tokenContract = new ethers.Contract(harvestedToken.address, ABI.ERC20, signer);
+                const storedToken = await tokenContract.balanceOf(harvest.strategy.address);
+                harvestable = harvestable.add(storedToken);
             }
         } catch (err) {
             // This fails for certain strategies where the strategy lacks a `rewarder`
@@ -280,6 +310,8 @@ async function addRequirements(harvests) {
 
                     const bonusTokenContract = new ethers.Contract(addressBonusToken, ABI.ERC20, signer);
                     decimalsBonusToken = await bonusTokenContract.decimals();
+                    const balanceOfStrategy = await bonusTokenContract.balanceOf(harvest.strategy.address);
+                    harvestableBonusToken = harvestableBonusToken.add(balanceOfStrategy);
                     bonusRewardPrice = await estimatePriceOfAsset(addressBonusToken, decimalsBonusToken);                
                 }
             }
@@ -298,7 +330,7 @@ async function addRequirements(harvests) {
             ...harvest,
             harvestable,
             harvestOverride,
-            harvestSymbol: rewardMap(harvest, isAxial),
+            harvestSymbol: rewardMap(harvest, isAxial).symbol,
             keep,
             keepMax,
             treasuryFee: ethers.BigNumber.from(await harvest.strategy.performanceTreasuryFee()),
@@ -333,14 +365,8 @@ function addCalculations(harvests) {
         const bonusToken = harvest.bonusToken;
         if (bonusToken.address) {
 
-            const correction = ethers.BigNumber.from(bonusToken.decimals - 18);
-            let harvestableCorrected = bonusToken.harvestable;
-            if (correction > 0) {
-                harvestableCorrected = bonusToken.harvestable.mul(ethers.BigNumber.from(10).pow(correction));
-            }
-
-            const gainWAVAXBonus = harvestableCorrected.mul(bonusToken.price).div(harvest.priceWAVAX);
-            const gainUSDBonus = harvestableCorrected.mul(bonusToken.price).div(Util.offset(18));
+            const gainWAVAXBonus = bonusToken.harvestable.mul(bonusToken.price).div(harvest.priceWAVAX);
+            const gainUSDBonus = bonusToken.harvestable.mul(bonusToken.price).div(Util.offset(18));
 
             gainWAVAX = gainWAVAX.add(gainWAVAXBonus);
             gainUSD = gainUSD.add(gainUSDBonus);
