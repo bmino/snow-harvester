@@ -20,7 +20,8 @@ const {
     TEDDY_ADDRESS,
     TJ_MASTERCHEF,
     AXIAL_MASTERCHEF,
-    QI_ADDRESS
+    QI_ADDRESS,
+    RETRY_TXS
 } = require('../../config/Constants');
 const { ethers } = require('ethers');
 
@@ -277,11 +278,17 @@ async function addRequirements(harvests) {
                 harvestable = await harvest.strategy.getWavaxAccrued();
             } else {
                 harvestable = await harvest.strategy.getHarvestable();
-                
-                const harvestedToken = rewardMap(harvest, isAxial);
-                const tokenContract = new ethers.Contract(harvestedToken.address, ABI.ERC20, signer);
-                const storedToken = await tokenContract.balanceOf(harvest.strategy.address);
-                harvestable = harvestable.add(storedToken);
+             
+                try {
+                    const harvestedToken = rewardMap(harvest, isAxial);
+                    const tokenContract = new ethers.Contract(harvestedToken.address, ABI.ERC20, signer);
+                    const storedToken = await tokenContract.balanceOf(harvest.strategy.address);
+                    harvestable = harvestable.add(storedToken);
+                } catch (error) {
+                    console.error("Error fetching strategy balance.")
+                    console.error(error);
+                }
+
             }
         } catch (err) {
             // This fails for certain strategies where the strategy lacks a `rewarder`
@@ -585,7 +592,7 @@ function addDecisions(harvests) {
     return harvests.map(obj => addHarvestDecision(obj));
 }
 
-const executeTx = async (harvest, decision, tx, type, params = []) => {
+const executeTx = async (harvest, decision, tx, type, params = [], lastTry = 0) => {
     if (!decision) return null;
     if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would ${type} strategy ${harvest.name} (${harvest.strategy.address}). Set CONFIG.EXECUTION.ENABLED to enable harvesting`);
     console.log(`${type} strategy address: ${harvest.strategy.address} (${harvest.name}) ...`);
@@ -603,6 +610,9 @@ const executeTx = async (harvest, decision, tx, type, params = []) => {
         return finishedTx;
     } catch (error) {
         console.log(error.message);
+        if(RETRY_TXS > lastTry){
+            return executeTx(harvest, decision, tx, type, params, lastTry += 1)
+        }
         return null;
     }
 };
