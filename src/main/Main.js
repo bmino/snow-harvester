@@ -281,9 +281,10 @@ async function addRequirements(harvests) {
     const addHarvestFees = async (harvest) => {
         let isAxial = false;
         let isPlatypus = false;
+        let masterchefPlatypus;
 
         try {
-            await harvest.strategy.masterChefPlatypus();
+            masterchefPlatypus = await harvest.strategy.masterChefPlatypus();
             isPlatypus = true;
         } catch (error) {
             //not platypus pool
@@ -311,6 +312,13 @@ async function addRequirements(harvests) {
                 harvestable = await harvest.strategy.getWavaxAccrued();
             } else {
                 harvestable = await harvest.strategy.getHarvestable();
+                if(isPlatypus && masterchefPlatypus){
+                    const poolId = await harvest.strategy.poolId();
+                    const masterchefContract = new ethers.Contract(masterchefPlatypus, ABI.MASTERCHEF_PLATYPUS, signer);
+                    const userInfo = await masterchefContract.userInfo(poolId, harvest.strategy.address);
+
+                    harvestable = userInfo.rewardDebt;
+                }
 
                 try {
                     const harvestedToken = rewardMap(harvest, isAxial, isPlatypus);
@@ -361,11 +369,13 @@ async function addRequirements(harvests) {
 
                 if (poolIndex > -1 && minichefRewarders[poolIndex].rewarderAddress !== ZERO_ADDRESS) {
                     const rewarderContract = new ethers.Contract(minichefRewarders[poolIndex].rewarderAddress, ABI.PANGOLIN_REWARDER, signer);
-                    const extraMultiplier = await rewarderContract.getRewardMultipliers()[0];
+                    let extraMultiplier = await rewarderContract.getRewardMultipliers();
+                    extraMultiplier = extraMultiplier[0];
 
                     if (harvestable > 0) {
                         //TODO add more rewards 
-                        addressBonusToken = await rewarderContract.getRewardTokens()[0];
+                        addressBonusToken = await rewarderContract.getRewardTokens();
+                        addressBonusToken = addressBonusToken[0];
                         harvestableBonusToken = harvestable.mul(extraMultiplier).div("1"+"0".repeat(18));
 
                         const bonusTokenContract = new ethers.Contract(addressBonusToken, ABI.ERC20, signer);
