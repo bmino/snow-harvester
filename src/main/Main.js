@@ -21,12 +21,14 @@ const {
     TJ_MASTERCHEF,
     AXIAL_MASTERCHEF,
     QI_ADDRESS,
-    RETRY_TXS
+    RETRY_TXS,
+    PTP_ADDRESS
 } = require('../../config/Constants');
 const { ethers } = require('ethers');
 
 var provider, signer;
 var masterchefPoolIds = [];
+var minichefRewarders = [];
 
 // Authenticate our wallet
 if (CONFIG.EXECUTION.ENABLED) {
@@ -123,6 +125,7 @@ async function initHarvests() {
     };
 
     const masterchefs = [AXIAL_MASTERCHEF, TJ_MASTERCHEF];
+    const pangolinMinichef = '0x1f806f7C8dED893fd3caE279191ad7Aa3798E928';
 
     for (const address of masterchefs) {
         const mcContract = new ethers.Contract(address, ABI.MASTERCHEF_V3, signer);
@@ -134,6 +137,16 @@ async function initHarvests() {
             arrayPoolInfo.push(poolInfo);
         }
         masterchefPoolIds.push(arrayPoolInfo);
+    }
+
+    const pangolinMinichefContract = new ethers.Contract(pangolinMinichef, ABI.MINICHEF_V2, signer);
+    const minichefLpTokens = await pangolinMinichefContract.lpTokens();
+    for (let i = 0; i < minichefLpTokens.length; i++) {
+        const rewarderAddress = await pangolinMinichefContract.rewarder(i);
+        minichefRewarders.push({
+            rewarderAddress,
+            address: minichefLpTokens[i],
+        });
     }
 
     const results = [];
@@ -182,9 +195,13 @@ async function initHarvests() {
 }
 
 async function addRequirements(harvests) {
-    const priceMap = async (harvest, isAxial) => {
+    const priceMap = async (harvest, isAxial, isPlatypus) => {
         if (isAxial) {
             return await estimatePriceOfAsset(AXIAL_ADDRESS, 18);
+        }
+
+        if (isPlatypus) {
+            return await estimatePriceOfAsset(PTP_ADDRESS, 18);
         }
 
         switch (harvest.wantSymbol) {
@@ -208,47 +225,54 @@ async function addRequirements(harvests) {
         }
     }
 
-    const rewardMap = (harvest, isAxial) => {
+    const rewardMap = (harvest, isAxial, isPlatypus) => {
         if (isAxial) {
             return {
-                symbol:"AXIAL",
+                symbol: "AXIAL",
                 address: AXIAL_ADDRESS
+            };
+        }
+
+        if (isPlatypus) {
+            return {
+                symbol: "PTP",
+                address: PTP_ADDRESS
             };
         }
 
         switch (harvest.type) {
             case 'BENQI':
                 return {
-                    symbol:"QI",
+                    symbol: "QI",
                     address: QI_ADDRESS
                 };
             case 'AAVE':
                 return {
-                    symbol:"WAVAX",
+                    symbol: "WAVAX",
                     address: WAVAX_ADDRESS
                 };
             case 'BANKER':
                 return {
-                    symbol:"JOE",
+                    symbol: "JOE",
                     address: JOE_ADDRESS
                 };
             case 'TEDDY':
                 return {
-                    symbol:"WAVAX",
+                    symbol: "WAVAX",
                     address: WAVAX_ADDRESS
                 };
         }
         switch (harvest.wantSymbol) {
             case 'PGL': case 'PNG': return {
-                symbol:"PNG",
+                symbol: "PNG",
                 address: PNG_ADDRESS
             };
             case 'JLP': return {
-                symbol:"JOE",
+                symbol: "JOE",
                 address: JOE_ADDRESS
             };
             default: return {
-                symbol:harvest.wantSymbol,
+                symbol: harvest.wantSymbol,
                 address: harvest.wantAddress
             };
         }
@@ -256,6 +280,16 @@ async function addRequirements(harvests) {
 
     const addHarvestFees = async (harvest) => {
         let isAxial = false;
+        let isPlatypus = false;
+        let masterchefPlatypus;
+
+        try {
+            masterchefPlatypus = await harvest.strategy.masterChefPlatypus();
+            isPlatypus = true;
+        } catch (error) {
+            //not platypus pool
+        }
+
         try {
             await harvest.strategy.masterChefAxialV3();
             isAxial = true;
@@ -263,14 +297,13 @@ async function addRequirements(harvests) {
             //not axial pool
         }
 
-        if (!priceMap(harvest, isAxial) ||
-            !rewardMap(harvest, isAxial)) {
+        if (!priceMap(harvest, isAxial, isPlatypus) ||
+            !rewardMap(harvest, isAxial, isPlatypus)) {
             throw new Error(`Unknown symbol: ${harvest.wantSymbol}`);
         }
 
         let harvestable;
         let harvestOverride = false;
-        let addressBonusToken, harvestableBonusToken, bonusRewardPrice, decimalsBonusToken;
 
         //account for extra rewards
         try {
@@ -278,9 +311,9 @@ async function addRequirements(harvests) {
                 harvestable = await harvest.strategy.getWavaxAccrued();
             } else {
                 harvestable = await harvest.strategy.getHarvestable();
-             
+
                 try {
-                    const harvestedToken = rewardMap(harvest, isAxial);
+                    const harvestedToken = rewardMap(harvest, isAxial, isPlatypus);
                     const tokenContract = new ethers.Contract(harvestedToken.address, ABI.ERC20, signer);
                     const storedToken = await tokenContract.balanceOf(harvest.strategy.address);
                     harvestable = harvestable.add(storedToken);
@@ -297,6 +330,7 @@ async function addRequirements(harvests) {
             harvestOverride = true;
         }
 
+        let bonusTokens = [];
         try {
             let masterchefAddress, poolInfo;
             if (harvest.strategyName.startsWith("StrategyJoe")) {
@@ -312,16 +346,60 @@ async function addRequirements(harvests) {
                 const masterchefContract = new ethers.Contract(masterchefAddress, ABI.MASTERCHEF_V3, signer);
                 const strategyInfo = await masterchefContract.pendingTokens(poolInfo.poolId, harvest.strategy.address);
                 if (strategyInfo.pendingBonusToken.gt("0x0")) {
-                    addressBonusToken = strategyInfo.bonusTokenAddress;
-                    harvestableBonusToken = strategyInfo.pendingBonusToken;
+                    const addressBonusToken = strategyInfo.bonusTokenAddress;
+                    let harvestableBonusToken = strategyInfo.pendingBonusToken;
 
                     const bonusTokenContract = new ethers.Contract(addressBonusToken, ABI.ERC20, signer);
-                    decimalsBonusToken = await bonusTokenContract.decimals();
+                    const decimalsBonusToken = await bonusTokenContract.decimals();
                     const balanceOfStrategy = await bonusTokenContract.balanceOf(harvest.strategy.address);
                     harvestableBonusToken = harvestableBonusToken.add(balanceOfStrategy);
-                    bonusRewardPrice = await estimatePriceOfAsset(addressBonusToken, decimalsBonusToken);                
+                    const bonusRewardPrice = await estimatePriceOfAsset(addressBonusToken, decimalsBonusToken);
+
+                    bonusTokens.push(
+                        {
+                            decimals: decimalsBonusToken,
+                            address: addressBonusToken,
+                            harvestable: harvestableBonusToken,
+                            price: bonusRewardPrice
+                        }
+                    )
                 }
             }
+
+            if (harvest.strategyName.startsWith("StrategyPng")) {
+                const poolIndex = minichefRewarders.findIndex(o => o.address.toLowerCase() === harvest.wantAddress.toLowerCase());
+
+                if (poolIndex > -1 && minichefRewarders[poolIndex].rewarderAddress !== ZERO_ADDRESS) {
+                    const rewarderContract = new ethers.Contract(minichefRewarders[poolIndex].rewarderAddress, ABI.PANGOLIN_REWARDER, signer);
+                    const extraMultipliers = await rewarderContract.getRewardMultipliers();
+                    const addressBonusTokens = await rewarderContract.getRewardTokens();
+
+                    for(let i = 0;i < extraMultipliers.length;i++){
+                        const extraMultiplier = extraMultipliers[i];
+
+                        if (harvestable > 0 && extraMultiplier > 0) {
+                        //TODO add more rewards 
+
+                            const addressBonusToken = addressBonusTokens[i];
+                            let harvestableBonusToken = harvestable.mul(extraMultiplier).div("1"+"0".repeat(18));
+
+                        const bonusTokenContract = new ethers.Contract(addressBonusToken, ABI.ERC20, signer);
+                            const decimalsBonusToken = await bonusTokenContract.decimals();
+                        const balanceOfStrategy = await bonusTokenContract.balanceOf(harvest.strategy.address);
+                        harvestableBonusToken = harvestableBonusToken.add(balanceOfStrategy);
+                            const bonusRewardPrice = await estimatePriceOfAsset(addressBonusToken, decimalsBonusToken);
+
+                            bonusTokens.push({
+                                address: addressBonusToken,
+                                harvestable: harvestableBonusToken,
+                                decimals: decimalsBonusToken,
+                                price: bonusRewardPrice
+                            })
+                        }
+                    }
+                }
+            }
+
         } catch (error) {
             console.error(error);
         }
@@ -337,7 +415,7 @@ async function addRequirements(harvests) {
             ...harvest,
             harvestable,
             harvestOverride,
-            harvestSymbol: rewardMap(harvest, isAxial).symbol,
+            harvestSymbol: rewardMap(harvest, isAxial, isPlatypus).symbol,
             keep,
             keepMax,
             treasuryFee: ethers.BigNumber.from(await harvest.strategy.performanceTreasuryFee()),
@@ -345,16 +423,11 @@ async function addRequirements(harvests) {
             balance: await harvest.snowglobe.balance(),
             available: await harvest.snowglobe.available(),
             priceWAVAX: await priceMap({ type: 'ERC20', wantSymbol: 'WAVAX' }),
-            rewardPrice: await priceMap(harvest, isAxial),
+            rewardPrice: await priceMap(harvest, isAxial, isPlatypus),
             priceWant: harvest.type === 'LP'
                 ? await getPoolShareAsUSD(harvest.want)
-                : await estimatePriceOfAsset(harvest.wantAddress, harvest.wantDecimals, isAxial),
-            bonusToken: {
-                price: bonusRewardPrice,
-                address: addressBonusToken,
-                harvestable: harvestableBonusToken,
-                decimals: decimalsBonusToken
-            }
+                : await estimatePriceOfAsset(harvest.wantAddress, harvest.wantDecimals, isAxial, isPlatypus),
+            bonusTokens
         }
     };
     return await Promise.all(harvests.map(addHarvestFees))
@@ -369,14 +442,19 @@ function addCalculations(harvests) {
         let gainWAVAX = harvest.harvestable.mul(harvest.rewardPrice).div(harvest.priceWAVAX);
         let gainUSD = harvest.harvestable.mul(harvest.rewardPrice).div(Util.offset(18));
 
-        const bonusToken = harvest.bonusToken;
-        if (bonusToken.address) {
-
+        try {
+            const bonusTokens = harvest.bonusTokens;
+            for(const bonusToken of bonusTokens){
+                if (bonusToken.address && bonusToken.harvestable && bonusToken.price) {
             const gainWAVAXBonus = bonusToken.harvestable.mul(bonusToken.price).div(harvest.priceWAVAX);
             const gainUSDBonus = bonusToken.harvestable.mul(bonusToken.price).div(Util.offset(18));
 
             gainWAVAX = gainWAVAX.add(gainWAVAXBonus);
             gainUSD = gainUSD.add(gainUSDBonus);
+                }
+            }
+        } catch (error) {
+            console.error(error);
         }
 
         const ratio = harvest.balance.isZero() ? ethers.BigNumber.from(100) : harvest.available.mul(100).div(harvest.balance);
@@ -610,7 +688,7 @@ const executeTx = async (harvest, decision, tx, type, params = [], lastTry = 0) 
         return finishedTx;
     } catch (error) {
         console.log(error.message);
-        if(RETRY_TXS > lastTry){
+        if (RETRY_TXS > lastTry) {
             return executeTx(harvest, decision, tx, type, params, lastTry += 1)
         }
         return null;
@@ -982,11 +1060,10 @@ async function getPoolShareAsUSD(poolContract) {
         console.error(error.message);
         return ethers.BigNumber.from('0');
     }
-
 }
 
-async function estimatePriceOfAsset(assetAddress, assetDecimals, isAxial = false) {
-    if (isAxial) {
+async function estimatePriceOfAsset(assetAddress, assetDecimals, isAxial = false, isPlatypus = false) {
+    if (isAxial || isPlatypus) {
         const virtualPrice = ethers.utils.parseUnits("1", 18);
         return virtualPrice;
     }

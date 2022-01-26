@@ -16,6 +16,7 @@ const Wants = {
   ],
 
   CONTROLLERS: [
+    '0x14559fb4d15Cf8DCbc35b7EDd1215d56c0468202', // Platypus controller
     '0xCEB829a0881350689dAe8CBD77D0E012cf7a6a3f', // New trader joe controller
     '0x252B5fD3B1Cb07A2109bF36D5bDE6a247c6f4B59', // BENQI second Controller
     '0xF2FA11Fc9247C23b3B622C41992d8555f6D01D8f', // new BANKER JOE controller
