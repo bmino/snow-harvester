@@ -304,7 +304,6 @@ async function addRequirements(harvests) {
 
         let harvestable;
         let harvestOverride = false;
-        let addressBonusToken, harvestableBonusToken, bonusRewardPrice, decimalsBonusToken;
 
         //account for extra rewards
         try {
@@ -312,13 +311,6 @@ async function addRequirements(harvests) {
                 harvestable = await harvest.strategy.getWavaxAccrued();
             } else {
                 harvestable = await harvest.strategy.getHarvestable();
-                if(isPlatypus && masterchefPlatypus){
-                    const poolId = await harvest.strategy.poolId();
-                    const masterchefContract = new ethers.Contract(masterchefPlatypus, ABI.MASTERCHEF_PLATYPUS, signer);
-                    const userInfo = await masterchefContract.userInfo(poolId, harvest.strategy.address);
-
-                    harvestable = userInfo.rewardDebt;
-                }
 
                 try {
                     const harvestedToken = rewardMap(harvest, isAxial, isPlatypus);
@@ -338,6 +330,7 @@ async function addRequirements(harvests) {
             harvestOverride = true;
         }
 
+        let bonusTokens = [];
         try {
             let masterchefAddress, poolInfo;
             if (harvest.strategyName.startsWith("StrategyJoe")) {
@@ -353,14 +346,23 @@ async function addRequirements(harvests) {
                 const masterchefContract = new ethers.Contract(masterchefAddress, ABI.MASTERCHEF_V3, signer);
                 const strategyInfo = await masterchefContract.pendingTokens(poolInfo.poolId, harvest.strategy.address);
                 if (strategyInfo.pendingBonusToken.gt("0x0")) {
-                    addressBonusToken = strategyInfo.bonusTokenAddress;
-                    harvestableBonusToken = strategyInfo.pendingBonusToken;
+                    const addressBonusToken = strategyInfo.bonusTokenAddress;
+                    let harvestableBonusToken = strategyInfo.pendingBonusToken;
 
                     const bonusTokenContract = new ethers.Contract(addressBonusToken, ABI.ERC20, signer);
-                    decimalsBonusToken = await bonusTokenContract.decimals();
+                    const decimalsBonusToken = await bonusTokenContract.decimals();
                     const balanceOfStrategy = await bonusTokenContract.balanceOf(harvest.strategy.address);
                     harvestableBonusToken = harvestableBonusToken.add(balanceOfStrategy);
-                    bonusRewardPrice = await estimatePriceOfAsset(addressBonusToken, decimalsBonusToken);
+                    const bonusRewardPrice = await estimatePriceOfAsset(addressBonusToken, decimalsBonusToken);
+
+                    bonusTokens.push(
+                        {
+                            decimals: decimalsBonusToken,
+                            address: addressBonusToken,
+                            harvestable: harvestableBonusToken,
+                            price: bonusRewardPrice
+                        }
+                    )
                 }
             }
 
@@ -369,20 +371,31 @@ async function addRequirements(harvests) {
 
                 if (poolIndex > -1 && minichefRewarders[poolIndex].rewarderAddress !== ZERO_ADDRESS) {
                     const rewarderContract = new ethers.Contract(minichefRewarders[poolIndex].rewarderAddress, ABI.PANGOLIN_REWARDER, signer);
-                    let extraMultiplier = await rewarderContract.getRewardMultipliers();
-                    extraMultiplier = extraMultiplier[0];
+                    const extraMultipliers = await rewarderContract.getRewardMultipliers();
+                    const addressBonusTokens = await rewarderContract.getRewardTokens();
 
-                    if (harvestable > 0) {
+                    for(let i = 0;i < extraMultipliers.length;i++){
+                        const extraMultiplier = extraMultipliers[i];
+
+                        if (harvestable > 0 && extraMultiplier > 0) {
                         //TODO add more rewards 
-                        addressBonusToken = await rewarderContract.getRewardTokens();
-                        addressBonusToken = addressBonusToken[0];
-                        harvestableBonusToken = harvestable.mul(extraMultiplier).div("1"+"0".repeat(18));
+
+                            const addressBonusToken = addressBonusTokens[i];
+                            let harvestableBonusToken = harvestable.mul(extraMultiplier).div("1"+"0".repeat(18));
 
                         const bonusTokenContract = new ethers.Contract(addressBonusToken, ABI.ERC20, signer);
-                        decimalsBonusToken = await bonusTokenContract.decimals();
+                            const decimalsBonusToken = await bonusTokenContract.decimals();
                         const balanceOfStrategy = await bonusTokenContract.balanceOf(harvest.strategy.address);
                         harvestableBonusToken = harvestableBonusToken.add(balanceOfStrategy);
-                        bonusRewardPrice = await estimatePriceOfAsset(addressBonusToken, decimalsBonusToken);
+                            const bonusRewardPrice = await estimatePriceOfAsset(addressBonusToken, decimalsBonusToken);
+
+                            bonusTokens.push({
+                                address: addressBonusToken,
+                                harvestable: harvestableBonusToken,
+                                decimals: decimalsBonusToken,
+                                price: bonusRewardPrice
+                            })
+                        }
                     }
                 }
             }
@@ -414,12 +427,7 @@ async function addRequirements(harvests) {
             priceWant: harvest.type === 'LP'
                 ? await getPoolShareAsUSD(harvest.want)
                 : await estimatePriceOfAsset(harvest.wantAddress, harvest.wantDecimals, isAxial, isPlatypus),
-            bonusToken: {
-                price: bonusRewardPrice,
-                address: addressBonusToken,
-                harvestable: harvestableBonusToken,
-                decimals: decimalsBonusToken
-            }
+            bonusTokens
         }
     };
     return await Promise.all(harvests.map(addHarvestFees))
@@ -434,14 +442,19 @@ function addCalculations(harvests) {
         let gainWAVAX = harvest.harvestable.mul(harvest.rewardPrice).div(harvest.priceWAVAX);
         let gainUSD = harvest.harvestable.mul(harvest.rewardPrice).div(Util.offset(18));
 
-        const bonusToken = harvest.bonusToken;
-        if (bonusToken.address) {
-
+        try {
+            const bonusTokens = harvest.bonusTokens;
+            for(const bonusToken of bonusTokens){
+                if (bonusToken.address && bonusToken.harvestable && bonusToken.price) {
             const gainWAVAXBonus = bonusToken.harvestable.mul(bonusToken.price).div(harvest.priceWAVAX);
             const gainUSDBonus = bonusToken.harvestable.mul(bonusToken.price).div(Util.offset(18));
 
             gainWAVAX = gainWAVAX.add(gainWAVAXBonus);
             gainUSD = gainUSD.add(gainUSDBonus);
+                }
+            }
+        } catch (error) {
+            console.error(error);
         }
 
         const ratio = harvest.balance.isZero() ? ethers.BigNumber.from(100) : harvest.available.mul(100).div(harvest.balance);
