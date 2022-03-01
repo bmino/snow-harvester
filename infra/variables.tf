@@ -19,3 +19,8 @@ data "aws_ssm_parameter" "dd_dog" {
 data "aws_ssm_parameter" "webhook" {
   name = "${local.env}-harvester-webhook"
 }
+
+data "aws_ssm_parameter" "optimizer" { 
+  name = "${local.env}-optimizer-webhook"
+}
+

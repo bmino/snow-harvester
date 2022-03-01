@@ -14,7 +14,8 @@ const Config = {
     },
     DISCORD: {
         ENABLED: true,
-        WEBHOOK_URL: process.env.WEBHOOK_URL
+        WEBHOOK_URL: process.env.WEBHOOK_URL,
+        WEBHOOK_OPTIMIZER: process.env.WEBHOOK_OPTIMIZER
     },
 };
 

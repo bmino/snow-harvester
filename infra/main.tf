@@ -18,8 +18,12 @@ locals {
           value = data.aws_ssm_parameter.discord_key.value
         },
         {
-          name: "WEBHOOK_URL",
+          name =  "WEBHOOK_URL",
           value = data.aws_ssm_parameter.webhook.value
+        },
+        { 
+          name = "WEBHOOK_OPTIMIZER"
+          value = data.aws_ssm_parameter.optimizer.value
         }
       ],
       logConfiguration = {

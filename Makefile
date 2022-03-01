@@ -12,7 +12,7 @@ test-envvars:
 	@[ "${env}" ] || ( echo "env var is not set"; exit 1 )
 
 build: test-envvars
-	docker build -t $(ECR_REPO_URL):${SERVICE_TAG} .
+	docker build --platform linux/amd64 -t $(ECR_REPO_URL):${SERVICE_TAG} .
 
 push: test-envvars
 	aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $(ECR_REPO_URL)

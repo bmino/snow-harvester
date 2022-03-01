@@ -1,8 +1,8 @@
+const { doOptimize } = require('./Optimizer');
 const CONFIG = require('../../config/Config');
 const ABI = require('../../config/abi.json');
 const Util = require('./Util');
-const WANTS = require('../../config/Wants');
-const axios = require('axios');
+const { WANTS, OPTIMIZER_POOLS } = require('../../config/Wants');
 const VALUATION = require('../../config/Valuation');
 const {
     ZERO_ADDRESS,
@@ -22,7 +22,8 @@ const {
     AXIAL_MASTERCHEF,
     QI_ADDRESS,
     RETRY_TXS,
-    PTP_ADDRESS
+    PTP_ADDRESS,
+    MIN_TVL_TO_HARVEST_FOLDING
 } = require('../../config/Constants');
 const { ethers } = require('ethers');
 
@@ -68,9 +69,9 @@ const scheduledHarvest =
 
 scheduledHarvest();
 
-function harvest() {
-    initHarvests()
-        .then(addRequirements)
+async function harvest() {
+    const harvests = await initHarvests();
+    await addRequirements(harvests)
         .then(addCalculations)
         .then(addEarnTx)
         .then(addHarvestTx)
@@ -83,6 +84,7 @@ function harvest() {
         .then(doSync)
         .then(doDeleveraging)
         .then(sendDiscord)
+        .then(async () => { await doOptimize(signer)  })
         .then(() => {
             if (CONFIG.EXECUTION.CONTAINER_MODE) {
                 process.exit();
@@ -107,14 +109,19 @@ async function getSnowglobes() {
     ];
 }
 
-async function initHarvests() {
+async function initHarvests(retrys = 0) {
     provider = await selectBestProvider();
     signer = new ethers.Wallet(CONFIG.WALLET.KEY, provider);
 
     const gasPrice = await provider.getGasPrice();
     //we shouldnt harvest if the gas price is too high
     if (gasPrice > MAX_GAS_PRICE) {
-        throw new Error("Gas price too High");
+        if(retrys > 11 ){ //try 2 hours
+            throw new Error("Tried too many times, aborting.");
+        }
+        console.log("Gas too high, awaiting 10min before trying again.");
+        await Util.wait(600000); //wait 10 minutes
+        return initHarvests(retrys += 1);
     }
 
     const snowglobes = await getSnowglobes();
@@ -190,7 +197,7 @@ async function initHarvests() {
         } catch (error) {
             console.log(error.message);
         }
-    }
+    };
     return results;
 }
 
@@ -345,13 +352,16 @@ async function addRequirements(harvests) {
             if (poolInfo && poolInfo.poolId > -1) {
                 const masterchefContract = new ethers.Contract(masterchefAddress, ABI.MASTERCHEF_V3, signer);
                 const strategyInfo = await masterchefContract.pendingTokens(poolInfo.poolId, harvest.strategy.address);
-                if (strategyInfo.pendingBonusToken.gt("0x0")) {
                     const addressBonusToken = strategyInfo.bonusTokenAddress;
-                    let harvestableBonusToken = strategyInfo.pendingBonusToken;
 
+                if (strategyInfo.pendingBonusToken.gt("0x0")) {
                     const bonusTokenContract = new ethers.Contract(addressBonusToken, ABI.ERC20, signer);
+                    const balanceOfRewarder = await bonusTokenContract.balanceOf(poolInfo.poolInfo.rewarder);
+                    if(balanceOfRewarder.gt("0x0")){
+                        let harvestableBonusToken = strategyInfo.pendingBonusToken;
                     const decimalsBonusToken = await bonusTokenContract.decimals();
                     const balanceOfStrategy = await bonusTokenContract.balanceOf(harvest.strategy.address);
+
                     harvestableBonusToken = harvestableBonusToken.add(balanceOfStrategy);
                     const bonusRewardPrice = await estimatePriceOfAsset(addressBonusToken, decimalsBonusToken);
 
@@ -363,6 +373,7 @@ async function addRequirements(harvests) {
                             price: bonusRewardPrice
                         }
                     )
+                    }
                 }
             }
 
@@ -378,12 +389,13 @@ async function addRequirements(harvests) {
                         const extraMultiplier = extraMultipliers[i];
 
                         if (harvestable > 0 && extraMultiplier > 0) {
-                        //TODO add more rewards 
-
                             const addressBonusToken = addressBonusTokens[i];
                             let harvestableBonusToken = harvestable.mul(extraMultiplier).div("1"+"0".repeat(18));
 
                         const bonusTokenContract = new ethers.Contract(addressBonusToken, ABI.ERC20, signer);
+                            const balanceOfRewarder = await bonusTokenContract.balanceOf(minichefRewarders[poolIndex].rewarderAddress);
+
+                            if(balanceOfRewarder.gt("0x0")){
                             const decimalsBonusToken = await bonusTokenContract.decimals();
                         const balanceOfStrategy = await bonusTokenContract.balanceOf(harvest.strategy.address);
                         harvestableBonusToken = harvestableBonusToken.add(balanceOfStrategy);
@@ -395,6 +407,7 @@ async function addRequirements(harvests) {
                                 decimals: decimalsBonusToken,
                                 price: bonusRewardPrice
                             })
+                            }
                         }
                     }
                 }
@@ -529,7 +542,7 @@ async function addLeverageTx(harvests) {
                     leverageGas: ethers.BigNumber.from(leverageGas), //await leverageTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
                 }
             } catch (error) {
-                console.log(harvest.name);
+                console.log(harvest.name, "Leverage");
                 console.log(error.message);
                 //cant be leveraged
                 return { ...harvest };
@@ -558,7 +571,20 @@ async function addDeleverageTx(harvests) {
                 const unleveragedSupply = await strategyUnsigned.callStatic["getSuppliedUnleveraged()"]({ from: CONFIG.WALLET.ADDRESS, gasLimit: 7_000_000 });
                 const idealSupply = await strategyUnsigned.callStatic["getLeveragedSupplyTarget(uint256)"](unleveragedSupply, { from: CONFIG.WALLET.ADDRESS, gasLimit: 7_000_000 });
 
-                const poolState = await getPoolAPIInfo(harvest.snowglobe.address);
+                const optimizedIndex = OPTIMIZER_POOLS.findIndex(
+                    o => o.snowglobe.toLowerCase() === harvest.snowglobe.address.toLowerCase()
+                );
+
+                let optimizedPool;
+                if(optimizedIndex > -1){
+                    optimizedPool = OPTIMIZER_POOLS[optimizedIndex].contracts.find(
+                        o => o.strategy.toLowerCase() === harvest.strategy.address.toLowerCase()
+                    )
+                }
+
+                const snowglobeAddr = optimizedPool ? optimizedPool.fixedSnowglobe : harvest.snowglobe.address;
+                
+                const poolState = await Util.getPoolAPIInfo(snowglobeAddr);
                 const deposited = await strategyUnsigned.balanceOfPool();
                 const supplied = await strategyUnsigned.getSuppliedView();
                 const currLev = supplied / deposited;
@@ -585,7 +611,7 @@ async function addDeleverageTx(harvests) {
                     poolState
                 }
             } catch (error) {
-                console.log(harvest.name);
+                console.log(harvest.name, "Deleverage");
                 console.log(error.message);
                 //cant be synced or deleveraged
                 return { ...harvest };
@@ -618,7 +644,9 @@ function addDecisions(harvests) {
 
         let harvestDecision = cost.lt(gain)
             || harvest.harvestOverride
-            || (isFolding && harvest.poolState && !harvest.poolState.deprecated)
+            || (isFolding && harvest.poolState 
+                && !harvest.poolState.deprecated 
+                && harvest.poolState.tvlStaked > MIN_TVL_TO_HARVEST_FOLDING)
             || harvest.name === "QI" //added QI manually because the benqi rewarder contract have a bad view of pending rewards
 
         if (harvest.harvestOverride && !cost.lt(gain)) {
@@ -631,8 +659,11 @@ function addDecisions(harvests) {
         if (harvest.leverageTx && harvest.syncTx && harvest.deleverageTx) {
             //if it's not safe we want to drop some of leveraging
             if (harvest.poolState) {
-                const shouldLeverage = (harvest.poolState.dailyAPR > MIN_APR_TO_LEVERAGE && !harvest.poolState.deprecated);
-                console.log(harvest.currLev, harvest.notSafe)
+                const shouldLeverage = (harvest.poolState.dailyAPR > MIN_APR_TO_LEVERAGE 
+                    && !harvest.poolState.deprecated
+                    && harvest.poolState.tvlStaked > MIN_TVL_TO_HARVEST_FOLDING
+                    );
+                console.log(harvest.currLev, harvest.notSafe, harvest.poolState.dailyAPR, MIN_APR_TO_LEVERAGE)
                 if (harvest.currLev > 1.2 && !shouldLeverage) {
                     //we shouldn't be leveraging this pool!
                     deleverageDecision = true;
@@ -897,24 +928,10 @@ async function discordUpdate({ results, harvests }) {
             }
 
             if (embed.embeds[0].title) {
-                await axios({
-                    url: CONFIG.DISCORD.WEBHOOK_URL,
-                    method: 'post',
-                    data: JSON.stringify(embed),
-                    headers: {
-                        'Content-Type': "application/json"
-                    }
-                }).then(res => {
-                    if (res.status !== 204) {
-                        console.error(`Could not post to Discord ${res.status}: ${res.statusText}`)
-                    }
-                }).catch(err => {
-                    console.error("Could not post to Discord: ", err)
-                })
+               await Util.sendDiscord(CONFIG.DISCORD.WEBHOOK_URL, embed);
             }
         }
     }
-
 }
 
 function handleError(err) {
@@ -931,7 +948,7 @@ function handleSettledPromises(results, originals, rejectCallback) {
         .map(result => result.value);
 }
 
-function scheduleNextHarvest() {
+async function scheduleNextHarvest() {
     executionWindowCenter += CONFIG.EXECUTION.INTERVAL;
     executionDrift = Util.randomIntFromInterval(-1 * CONFIG.EXECUTION.INTERVAL_WINDOW, CONFIG.EXECUTION.INTERVAL_WINDOW);
     const now = Date.now();
@@ -940,7 +957,8 @@ function scheduleNextHarvest() {
     console.log(`New execution window: ${new Date(executionWindowCenter - CONFIG.EXECUTION.INTERVAL_WINDOW).toLocaleTimeString()} - ${new Date(executionWindowCenter + CONFIG.EXECUTION.INTERVAL_WINDOW).toLocaleTimeString()}`);
     console.log(`Scheduled next harvest() for ${new Date(now + delay).toLocaleString()}`);
     console.log();
-    setTimeout(harvest, delay);
+    await Util.wait(delay);
+    await harvest();
 }
 
 
@@ -1047,12 +1065,28 @@ async function getPoolShareAsUSD(poolContract) {
                 const token0Contract = new ethers.Contract(token0Address, ABI.ERC20, signer);
                 const token0Decimals = await token0Contract.decimals();
                 const priceToken0 = await estimatePriceOfAsset(token0Address, token0Decimals);
-                return reserves._reserve0.mul(2).mul(priceToken0).div(totalSupply);
+                const correction = ethers.BigNumber.from(18 - token0Decimals);
+                let priceLP;
+                if (correction > 0) {
+                    priceLP = reserves._reserve0.mul(ethers.BigNumber.from(10).pow(correction)).mul(2).mul(priceToken0).div(totalSupply);
+                } else {
+                    priceLP = reserves._reserve0.mul(2).mul(priceToken0).div(totalSupply);
+                }
+            
+                return priceLP
             } catch (error) {
                 const token1Contract = new ethers.Contract(token1Address, ABI.ERC20, signer);
                 const token1Decimals = await token1Contract.decimals();
                 const priceToken1 = await estimatePriceOfAsset(token1Address, token1Decimals);
-                return reserves._reserve1.mul(2).mul(priceToken1).div(totalSupply);
+                const correction = ethers.BigNumber.from(18 - token1Decimals);
+                let priceLP;
+                if (correction > 0) {
+                    priceLP = reserves._reserve1.mul(ethers.BigNumber.from(10).pow(correction)).mul(2).mul(priceToken1).div(totalSupply);
+                } else {
+                    priceLP = reserves._reserve1.mul(2).mul(priceToken1).div(totalSupply);
+                }
+            
+                return priceLP
             }
         }
     } catch (error) {
@@ -1086,35 +1120,6 @@ async function estimatePriceOfAsset(assetAddress, assetDecimals, isAxial = false
         price = price.mul(priceWAVAX).div('1' + '0'.repeat(18));
     }
     return price;
-}
-
-async function getPoolAPIInfo(snowglobeAddress) {
-    const data = JSON.stringify({
-        query:
-            `{
-            PoolsInfoByAddress(address: "${snowglobeAddress}"){
-                dailyAPR
-                deprecated
-            }
-        }`,
-        variables: {}
-    });
-
-    const config = {
-        method: 'post',
-        url: 'https://api.snowapi.net/graphql',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        data: data
-    };
-
-    try {
-        const query = await axios(config);
-        return query.data.data.PoolsInfoByAddress;
-    } catch (error) {
-        console.error(error);
-    }
 }
 
 const roundDown = (value, decimals = 18) => {
