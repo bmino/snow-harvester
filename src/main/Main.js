@@ -26,8 +26,9 @@ const {
     MIN_TVL_TO_HARVEST_FOLDING
 } = require('../../config/Constants');
 const { ethers } = require('ethers');
+const Config = require('../../config/Config');
 
-var provider, signer;
+var provider, signer, currentBlockNumber, blocksDaily;
 var masterchefPoolIds = [];
 var minichefRewarders = [];
 
@@ -84,7 +85,7 @@ async function harvest() {
         .then(doSync)
         .then(doDeleveraging)
         .then(sendDiscord)
-        .then(async () => { await doOptimize(signer)  })
+        .then(async () => { await doOptimize(signer) })
         .then(() => {
             if (CONFIG.EXECUTION.CONTAINER_MODE) {
                 process.exit();
@@ -116,13 +117,31 @@ async function initHarvests(retrys = 0) {
     const gasPrice = await provider.getGasPrice();
     //we shouldnt harvest if the gas price is too high
     if (gasPrice > MAX_GAS_PRICE) {
-        if(retrys > 11 ){ //try 2 hours
+        if (retrys > 35) { //try 6 hours
             throw new Error("Tried too many times, aborting.");
         }
         console.log("Gas too high, awaiting 10min before trying again.");
         await Util.wait(600000); //wait 10 minutes
         return initHarvests(retrys += 1);
     }
+
+    const getBlocks24h = async (currentBlockNumber) => {
+        let currentBlock, yesterdayBlock;
+        await Promise.all([
+            provider.getBlock(currentBlockNumber),
+            provider.getBlock(currentBlockNumber - 20000)
+        ]).then(res => {
+            currentBlock = res[0]
+            yesterdayBlock = res[1]
+        });
+
+        const secondsInDay = 86400;
+
+        return ((secondsInDay / (currentBlock.timestamp - yesterdayBlock.timestamp)) * 20000) * 0.85;
+    }
+
+    currentBlockNumber = await provider.getBlockNumber();
+    blocksDaily = Math.floor(await getBlocks24h(currentBlockNumber));
 
     const snowglobes = await getSnowglobes();
 
@@ -157,7 +176,7 @@ async function initHarvests(retrys = 0) {
     }
 
     const results = [];
-    for(const snowglobeAddress of snowglobes){
+    for (const snowglobeAddress of snowglobes) {
         try {
             const { controller, want, snowglobe, strategy, type, wantAddress, strategyName } = await initializeContracts(WANTS.CONTROLLERS, snowglobeAddress);
             const snowglobeSymbol = await snowglobe.symbol();
@@ -212,7 +231,6 @@ async function addRequirements(harvests) {
         }
 
         switch (harvest.wantSymbol) {
-            case 'WAVAX': return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
             case 'PGL': case 'PNG': return await estimatePriceOfAsset(PNG_ADDRESS, 18);
             case 'JLP': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
             case 'xJOE': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
@@ -352,27 +370,27 @@ async function addRequirements(harvests) {
             if (poolInfo && poolInfo.poolId > -1) {
                 const masterchefContract = new ethers.Contract(masterchefAddress, ABI.MASTERCHEF_V3, signer);
                 const strategyInfo = await masterchefContract.pendingTokens(poolInfo.poolId, harvest.strategy.address);
-                    const addressBonusToken = strategyInfo.bonusTokenAddress;
+                const addressBonusToken = strategyInfo.bonusTokenAddress;
 
                 if (strategyInfo.pendingBonusToken.gt("0x0")) {
                     const bonusTokenContract = new ethers.Contract(addressBonusToken, ABI.ERC20, signer);
                     const balanceOfRewarder = await bonusTokenContract.balanceOf(poolInfo.poolInfo.rewarder);
-                    if(balanceOfRewarder.gt("0x0")){
+                    if (balanceOfRewarder.gt("0x0")) {
                         let harvestableBonusToken = strategyInfo.pendingBonusToken;
-                    const decimalsBonusToken = await bonusTokenContract.decimals();
-                    const balanceOfStrategy = await bonusTokenContract.balanceOf(harvest.strategy.address);
+                        const decimalsBonusToken = await bonusTokenContract.decimals();
+                        const balanceOfStrategy = await bonusTokenContract.balanceOf(harvest.strategy.address);
 
-                    harvestableBonusToken = harvestableBonusToken.add(balanceOfStrategy);
-                    const bonusRewardPrice = await estimatePriceOfAsset(addressBonusToken, decimalsBonusToken);
+                        harvestableBonusToken = harvestableBonusToken.add(balanceOfStrategy);
+                        const bonusRewardPrice = await estimatePriceOfAsset(addressBonusToken, decimalsBonusToken);
 
-                    bonusTokens.push(
-                        {
-                            decimals: decimalsBonusToken,
-                            address: addressBonusToken,
-                            harvestable: harvestableBonusToken,
-                            price: bonusRewardPrice
-                        }
-                    )
+                        bonusTokens.push(
+                            {
+                                decimals: decimalsBonusToken,
+                                address: addressBonusToken,
+                                harvestable: harvestableBonusToken,
+                                price: bonusRewardPrice
+                            }
+                        )
                     }
                 }
             }
@@ -385,28 +403,28 @@ async function addRequirements(harvests) {
                     const extraMultipliers = await rewarderContract.getRewardMultipliers();
                     const addressBonusTokens = await rewarderContract.getRewardTokens();
 
-                    for(let i = 0;i < extraMultipliers.length;i++){
+                    for (let i = 0; i < extraMultipliers.length; i++) {
                         const extraMultiplier = extraMultipliers[i];
 
                         if (harvestable > 0 && extraMultiplier > 0) {
                             const addressBonusToken = addressBonusTokens[i];
-                            let harvestableBonusToken = harvestable.mul(extraMultiplier).div("1"+"0".repeat(18));
+                            let harvestableBonusToken = harvestable.mul(extraMultiplier).div("1" + "0".repeat(18));
 
-                        const bonusTokenContract = new ethers.Contract(addressBonusToken, ABI.ERC20, signer);
+                            const bonusTokenContract = new ethers.Contract(addressBonusToken, ABI.ERC20, signer);
                             const balanceOfRewarder = await bonusTokenContract.balanceOf(minichefRewarders[poolIndex].rewarderAddress);
 
-                            if(balanceOfRewarder.gt("0x0")){
-                            const decimalsBonusToken = await bonusTokenContract.decimals();
-                        const balanceOfStrategy = await bonusTokenContract.balanceOf(harvest.strategy.address);
-                        harvestableBonusToken = harvestableBonusToken.add(balanceOfStrategy);
-                            const bonusRewardPrice = await estimatePriceOfAsset(addressBonusToken, decimalsBonusToken);
+                            if (balanceOfRewarder.gt("0x0")) {
+                                const decimalsBonusToken = await bonusTokenContract.decimals();
+                                const balanceOfStrategy = await bonusTokenContract.balanceOf(harvest.strategy.address);
+                                harvestableBonusToken = harvestableBonusToken.add(balanceOfStrategy);
+                                const bonusRewardPrice = await estimatePriceOfAsset(addressBonusToken, decimalsBonusToken);
 
-                            bonusTokens.push({
-                                address: addressBonusToken,
-                                harvestable: harvestableBonusToken,
-                                decimals: decimalsBonusToken,
-                                price: bonusRewardPrice
-                            })
+                                bonusTokens.push({
+                                    address: addressBonusToken,
+                                    harvestable: harvestableBonusToken,
+                                    decimals: decimalsBonusToken,
+                                    price: bonusRewardPrice
+                                })
                             }
                         }
                     }
@@ -457,13 +475,13 @@ function addCalculations(harvests) {
 
         try {
             const bonusTokens = harvest.bonusTokens;
-            for(const bonusToken of bonusTokens){
+            for (const bonusToken of bonusTokens) {
                 if (bonusToken.address && bonusToken.harvestable && bonusToken.price) {
-            const gainWAVAXBonus = bonusToken.harvestable.mul(bonusToken.price).div(harvest.priceWAVAX);
-            const gainUSDBonus = bonusToken.harvestable.mul(bonusToken.price).div(Util.offset(18));
+                    const gainWAVAXBonus = bonusToken.harvestable.mul(bonusToken.price).div(harvest.priceWAVAX);
+                    const gainUSDBonus = bonusToken.harvestable.mul(bonusToken.price).div(Util.offset(18));
 
-            gainWAVAX = gainWAVAX.add(gainWAVAXBonus);
-            gainUSD = gainUSD.add(gainUSDBonus);
+                    gainWAVAX = gainWAVAX.add(gainWAVAXBonus);
+                    gainUSD = gainUSD.add(gainUSDBonus);
                 }
             }
         } catch (error) {
@@ -511,9 +529,14 @@ async function addHarvestTx(harvests) {
         const strategyUnsigned = new ethers.Contract(harvest.strategy.address, ABI.STRATEGY, provider);
         const estGas = await strategyUnsigned.estimateGas.harvest({ from: CONFIG.WALLET.ADDRESS });
         const harvestGas = estGas > MAX_GAS_LIMIT_HARV ? estGas : MAX_GAS_LIMIT_HARV;
+        //avoid rate limiting by snowtrace
+        await Util.wait(Math.floor((300000*Math.random())));
+        const harvestedLast24h = await ran24h(harvest.strategy.address, "0x4641257d");
+        console.log(harvestedLast24h, harvest.strategy.address);
         return {
             ...harvest,
             harvestTx,
+            harvestedLast24h,
             harvestGas: ethers.BigNumber.from(harvestGas),//await harvestTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
         };
     };
@@ -576,14 +599,14 @@ async function addDeleverageTx(harvests) {
                 );
 
                 let optimizedPool;
-                if(optimizedIndex > -1){
+                if (optimizedIndex > -1) {
                     optimizedPool = OPTIMIZER_POOLS[optimizedIndex].contracts.find(
                         o => o.strategy.toLowerCase() === harvest.strategy.address.toLowerCase()
                     )
                 }
 
                 const snowglobeAddr = optimizedPool ? optimizedPool.fixedSnowglobe : harvest.snowglobe.address;
-                
+
                 const poolState = await Util.getPoolAPIInfo(snowglobeAddr);
                 const deposited = await strategyUnsigned.balanceOfPool();
                 const supplied = await strategyUnsigned.getSuppliedView();
@@ -639,30 +662,31 @@ function addDecisions(harvests) {
         } else {
             gain = harvest.gainWAVAX.mul(harvest.keep).div(harvest.keepMax);
         }
-        const TWO_HUNDRED_USD = ethers.BigNumber.from('200' + '0'.repeat(18));
+        const ONE_THOUSAND_USD = ethers.BigNumber.from('1000' + '0'.repeat(18));
         const isFolding = (harvest.type === "BANKER" || harvest.type === "AAVE" || harvest.type === "BENQI");
 
-        let harvestDecision = cost.lt(gain)
+        let harvestDecision = (cost.lt(gain)
             || harvest.harvestOverride
-            || (isFolding && harvest.poolState 
-                && !harvest.poolState.deprecated 
+            || (isFolding && harvest.poolState
+                && !harvest.poolState.deprecated
                 && harvest.poolState.tvlStaked > MIN_TVL_TO_HARVEST_FOLDING)
-            || harvest.name === "QI" //added QI manually because the benqi rewarder contract have a bad view of pending rewards
+            || harvest.name === "QI")
+            && !harvest.harvestedLast24h //added QI manually because the benqi rewarder contract have a bad view of pending rewards
 
         if (harvest.harvestOverride && !cost.lt(gain)) {
             console.log(`Harvest decision overridden by flag!`);
         }
 
-        let earnDecision = harvest.ratio.gte(1) && harvest.availableUSD.gt(TWO_HUNDRED_USD);
+        let earnDecision = harvest.ratio.gte(1) && harvest.availableUSD.gt(ONE_THOUSAND_USD);
 
         let leverageDecision = false, syncDecision = false, deleverageDecision = false;
         if (harvest.leverageTx && harvest.syncTx && harvest.deleverageTx) {
             //if it's not safe we want to drop some of leveraging
             if (harvest.poolState) {
-                const shouldLeverage = (harvest.poolState.dailyAPR > MIN_APR_TO_LEVERAGE 
+                const shouldLeverage = (harvest.poolState.dailyAPR > MIN_APR_TO_LEVERAGE
                     && !harvest.poolState.deprecated
                     && harvest.poolState.tvlStaked > MIN_TVL_TO_HARVEST_FOLDING
-                    );
+                );
                 console.log(harvest.currLev, harvest.notSafe, harvest.poolState.dailyAPR, MIN_APR_TO_LEVERAGE)
                 if (harvest.currLev > 1.2 && !shouldLeverage) {
                     //we shouldn't be leveraging this pool!
@@ -928,7 +952,7 @@ async function discordUpdate({ results, harvests }) {
             }
 
             if (embed.embeds[0].title) {
-               await Util.sendDiscord(CONFIG.DISCORD.WEBHOOK_URL, embed);
+                await Util.sendDiscord(CONFIG.DISCORD.WEBHOOK_URL, embed);
             }
         }
     }
@@ -1072,7 +1096,7 @@ async function getPoolShareAsUSD(poolContract) {
                 } else {
                     priceLP = reserves._reserve0.mul(2).mul(priceToken0).div(totalSupply);
                 }
-            
+
                 return priceLP
             } catch (error) {
                 const token1Contract = new ethers.Contract(token1Address, ABI.ERC20, signer);
@@ -1085,7 +1109,7 @@ async function getPoolShareAsUSD(poolContract) {
                 } else {
                     priceLP = reserves._reserve1.mul(2).mul(priceToken1).div(totalSupply);
                 }
-            
+
                 return priceLP
             }
         }
@@ -1108,7 +1132,15 @@ async function estimatePriceOfAsset(assetAddress, assetDecimals, isAxial = false
     const correction = ethers.BigNumber.from(assetDecimals - destinationDecimals);
 
     const routerContract = new ethers.Contract(ROUTER, ABI.UNI_V2_ROUTER, signer);
-    const [input, output] = await routerContract.getAmountsOut('1' + '0'.repeat(assetDecimals), ROUTE);
+    let output;
+    if (ROUTE.length === 2) {
+        const [token0, token1] = await routerContract.getAmountsOut('1' + '0'.repeat(assetDecimals), ROUTE);
+        output = token1;
+    } else {
+        const [token0, token1, token2] = await routerContract.getAmountsOut('1' + '0'.repeat(assetDecimals), ROUTE);
+        output = token2;
+    }
+
     let price = output;
     if (correction > 0) {
         price = output.mul(ethers.BigNumber.from(10).pow(correction));
@@ -1163,4 +1195,46 @@ const getPoolInfo = (want, mcAddress) => {
         poolId,
         poolInfo
     };
+}
+
+const ran24h = async (strategyAddress, topic) => {
+
+    async function queryTransactions(startblock, endblock) {
+        const axios = require('axios');
+
+        const config = {
+            method: 'get',
+            url: `https://api.snowtrace.io/api` +
+                `?module=account` +
+                `&action=txlist` +
+                `&address=${strategyAddress}` +
+                `&startblock=${startblock}` +
+                `&endblock=${endblock}` +
+                `&sort=asc` +
+                `&apikey=${Config.SNOWTRACE.API_KEY}`,
+            headers: {}
+        };
+
+        const result = await axios(config);
+
+        return result.data;
+    }
+
+    const txs = await queryTransactions(currentBlockNumber - blocksDaily, currentBlockNumber);
+
+    if (!txs.result) {
+        return;
+    }
+
+    let foundTopic = false;
+
+    for (const transaction of txs.result) {
+
+        if (transaction.input === topic) {
+            foundTopic = true;
+        }
+    }
+
+    return foundTopic;
+
 }

@@ -4,6 +4,7 @@ const Constants = {
     PNG_ADDRESS: '0x60781C2586D68229fde47564546784ab3fACA982',
     JOE_ADDRESS: '0x6e84a6216eA6dACC71eE8E6b0a5B7322EEbC0fDd',
     DAI_ADDRESS: '0xd586E7F844cEa2F87f50152665BCbc2C279D8d70',
+    UST_ADDRESS: '0x260Bbf5698121EB85e7a74f2E45E16Ce762EbE11',
     USDT_ADDRESS: '0xc7198437980c041c805A1EDcbA50c1Ce5db95118',
     XJOE_ADDRESS: '0x57319d41F71E81F3c65F2a47CA4e001EbAFd4F33',
     BENQI_ADDRESS: '0x8729438EB15e2C8B576fCc6AeCdA6A148776C0F5',
@@ -23,11 +24,11 @@ const Constants = {
     MAX_GAS_PRICE: 100000000000,
     RETRY_TXS: 1,
     MIN_APR_TO_LEVERAGE: 0.011, //4% yearly
-    MIN_TVL_TO_HARVEST_FOLDING:1000,
+    MIN_TVL_TO_HARVEST_FOLDING:10000,
     PROVIDERS_URL:[    
-        'https://node.snowapi.net/ext/bc/C/rpc',  
+        'https://node.snowapi.net/ext/bc/C/rpc', 
         'https://api.avax.network/ext/bc/C/rpc',  
-    ] //this is by order of prefference
+    ] //this is by order of preference
 };
 
 module.exports = Constants;

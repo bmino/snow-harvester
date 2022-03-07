@@ -43,11 +43,11 @@ async function doOptimize(signer) {
         }
 
         //search for the best APY with a .3% buffer
-        let bestAPY = currentPoolInfo ? currentPoolInfo.yearlyAPY : 0;
+        let bestAPY = currentPoolInfo ? Number(currentPoolInfo.yearlyAPY) + 0.05 : 0;
         let bestIndex = -1;
         let poolName = "", source = "";
         for (let i = 0; i < infoList.length; i++) {
-            if(Number(infoList[i].APY) + 0.05 > bestAPY){
+            if(Number(infoList[i].APY) > bestAPY){
                 //found best APY for pool
                 bestIndex = i;
                 bestAPY = Number(infoList[i].APY);

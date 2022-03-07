@@ -8,8 +8,8 @@ const Config = {
     },
     EXECUTION: {
         ENABLED: true,
-        INTERVAL: 30 * MINUTE,
-        INTERVAL_WINDOW: 15 * MINUTE,
+        INTERVAL: 1 * HOUR,
+        INTERVAL_WINDOW: 30 * MINUTE,
         CONTAINER_MODE: true
     },
     DISCORD: {
@@ -17,6 +17,9 @@ const Config = {
         WEBHOOK_URL: process.env.WEBHOOK_URL,
         WEBHOOK_OPTIMIZER: process.env.WEBHOOK_OPTIMIZER
     },
+    SNOWTRACE: {
+        API_KEY: "INSERT_KEY"
+    }
 };
 
 module.exports = Config;
