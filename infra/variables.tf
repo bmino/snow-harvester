@@ -2,7 +2,7 @@ locals {
   cluster_name = "snowball-scheduled-task"
   env          = "prod"
   task_name    = "harvester"
-  version      = "1.0.0"
+  version      = "1.0.2"
 }
 
 data "aws_ssm_parameter" "snowball_key" {
