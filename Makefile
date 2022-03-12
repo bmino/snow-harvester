@@ -2,7 +2,7 @@ export
 AWS_DEFAULT_PROFILE=snowball
 SERVICE_NAME=harvester
 ECS_CLUSTER=${env}-snowball-scheduled-task
-SERVICE_TAG=latest
+SERVICE_TAG=1.0.0
 AWS_REGION=us-west-2
 ECR_REPO_URL=672139136522.dkr.ecr.us-west-2.amazonaws.com/${env}-${SERVICE_NAME}
 

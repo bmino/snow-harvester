@@ -18,7 +18,7 @@ const Config = {
         WEBHOOK_OPTIMIZER: process.env.WEBHOOK_OPTIMIZER
     },
     SNOWTRACE: {
-        API_KEY: "INSERT_KEY"
+        API_KEY: process.env.SNOWTRACE_KEY
     }
 };
 

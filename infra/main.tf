@@ -2,23 +2,29 @@ locals {
   task_definition = jsonencode([
     {
       name      = local.task_name
-      image     = aws_ecr_repository.repo.repository_url
+      image     = "${aws_ecr_repository.repo.repository_url}:${local.version}"
       essential = true,
       dockerLabels = {
         "com.datadoghq.ad.instances" : "[{\"host\":\"%%host%%\"}]",
         "com.datadoghq.ad.check_names" : "[\"harvester\"]"
       },
-      environment = [
+      secrets = [ 
         {
           name  = "SNOWBALL_KEY"
-          value = data.aws_ssm_parameter.snowball_key.value
+          valueFrom = data.aws_ssm_parameter.snowball_key.arn
         },
          {
           name  = "DISCORD_KEY"
-          value = data.aws_ssm_parameter.discord_key.value
+          valueFrom = data.aws_ssm_parameter.discord_key.arn
         },
+         { 
+           name = "SNOWTRACE_KEY"
+           valueFrom = data.aws_ssm_parameter.snowtrace.arn
+         }
+      ]
+      environment = [
         {
-          name =  "WEBHOOK_URL",
+          name =  "WEBHOOK_URL"
           value = data.aws_ssm_parameter.webhook.value
         },
         { 
@@ -28,10 +34,12 @@ locals {
       ],
       logConfiguration = {
         logDriver = "awsfirelens"
-
+        secretOptions = [{ 
+          name = "apikey"
+          valueFrom = data.aws_ssm_parameter.dd_dog.arn
+        }]
         options = {
           Name             = "datadog"
-          apikey           = data.aws_ssm_parameter.dd_dog.value
           "dd_service"     = "${local.env}-${local.task_name}"
           "Host"           = "http-intake.logs.datadoghq.com"
           "dd_source"      = "${local.env}-${local.task_name}"
@@ -46,11 +54,13 @@ locals {
       name      = "datadog-agent"
       image     = "datadog/agent:latest"
       essential = true
-      environment = [
+      secrets = [ 
         {
           name  = "DD_API_KEY",
-          value = data.aws_ssm_parameter.dd_dog.value
-        },
+          valueFrom = data.aws_ssm_parameter.dd_dog.arn
+        }
+      ],
+      environment = [
         {
           name  = "ECS_FARGATE"
           value = "true"
@@ -59,7 +69,7 @@ locals {
     },
     {
       name      = "log_router"
-      image     = "amazon/aws-for-fluent-bit:2.19.0"
+      image     = "public.ecr.aws/aws-observability/aws-for-fluent-bit:stable"
       essential = true
       firelensConfiguration = {
         type = "fluentbit"
@@ -77,7 +87,7 @@ resource "aws_ecs_cluster" "this" {
 
 resource "aws_ecr_repository" "repo" {
   name                 = "${local.env}-${local.task_name}"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true
@@ -92,7 +102,7 @@ resource "aws_ecr_repository" "repo" {
 module "ecs_scheduled_task" {
   source                         = "git@github.com:Snowball-Finance/terraform-ecs-schedule-task.git"
   name                           = "${local.env}-${local.task_name}"
-  schedule_expression            = "rate(8 hours)"
+  schedule_expression            = "rate(12 hours)"
   cluster_arn                    = aws_ecs_cluster.this.arn
   subnets                        = data.terraform_remote_state.vpc.outputs.private_subnets
   container_definitions          = local.task_definition
@@ -107,11 +117,10 @@ module "ecs_scheduled_task" {
   iam_path                       = "/service_role/"
   description                    = "Scheduled ECS Task for Harvester"
   enabled                        = true
-  create_ecs_events_role         = false
-  ecs_events_role_arn            = aws_iam_role.ecs_events.arn
+  create_ecs_events_role         = true
   create_ecs_task_execution_role = false
-  ecs_task_execution_role_arn    = aws_iam_role.ecs_task_execution.arn
-  task_role_arn                   = aws_iam_role.task_role.arn
+  ecs_task_execution_role_arn    = aws_iam_role.task_ecs_role.arn
+  task_role_arn                  = aws_iam_role.task_ecs_role.arn
 
   tags = {
     Environment = local.env
@@ -125,7 +134,7 @@ resource "aws_security_group" "this" {
   egress {
     from_port   = 0
     to_port     = 0
-    protocol    = "-1"
+    protocol    = -1
     cidr_blocks = ["0.0.0.0/0"]
   }
 

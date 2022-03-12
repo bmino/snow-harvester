@@ -2,6 +2,7 @@ locals {
   cluster_name = "snowball-scheduled-task"
   env          = "prod"
   task_name    = "harvester"
+  version      = "1.0.0"
 }
 
 data "aws_ssm_parameter" "snowball_key" {
@@ -20,7 +21,14 @@ data "aws_ssm_parameter" "webhook" {
   name = "${local.env}-harvester-webhook"
 }
 
+data "aws_ssm_parameter" "snowtrace" { 
+  name = "${local.env}-snowtrace-key"
+}
+
 data "aws_ssm_parameter" "optimizer" { 
   name = "${local.env}-optimizer-webhook"
 }
 
+data "aws_kms_key" "kms_key" {
+  key_id = "alias/${local.env}-kms-key"
+}

@@ -7,10 +7,15 @@ locals {
 
 provider "aws" {
   region  = "us-west-2"
-  version = "3.73"
 }
 
 terraform {
+  required_providers {
+    aws = { 
+      source = "hashicorp/aws"
+      version = "4.0.0"
+    }
+  }
   backend "s3" {
     encrypt        = true
     key            = "harvester.tfstate"
