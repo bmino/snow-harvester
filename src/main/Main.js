@@ -1,18 +1,60 @@
+const { doOptimize } = require('./Optimizer');
 const CONFIG = require('../../config/Config');
 const ABI = require('../../config/abi.json');
-const Web3 = require('web3');
-const web3 = new Web3(new Web3.providers.HttpProvider('https://api.avax.network/ext/bc/C/rpc'));
 const Util = require('./Util');
-const DiscordBot = require('./DiscordBot');
-const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
-const WAVAX_ADDRESS = '0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7';
-const PNG_ADDRESS = '0x60781c2586d68229fde47564546784ab3faca982';
-const DAI_ADDRESS = '0xba7deebbfc5fa1100fb055a87773e1e99cd3507a';
+const { WANTS, OPTIMIZER_POOLS } = require('../../config/Wants');
+const VALUATION = require('../../config/Valuation');
+const {
+    ZERO_ADDRESS,
+    WAVAX_ADDRESS,
+    PNG_ADDRESS,
+    JOE_ADDRESS,
+    BENQI_ADDRESS,
+    MAX_GAS_LIMIT_EARN,
+    MAX_GAS_LIMIT_LEV,
+    MAX_GAS_LIMIT_HARV,
+    MAX_GAS_PRICE,
+    PROVIDERS_URL,
+    AXIAL_ADDRESS,
+    MIN_APR_TO_LEVERAGE,
+    TEDDY_ADDRESS,
+    TJ_MASTERCHEF,
+    AXIAL_MASTERCHEF,
+    QI_ADDRESS,
+    RETRY_TXS,
+    PTP_ADDRESS,
+    MIN_TVL_TO_HARVEST_FOLDING
+} = require('../../config/Constants');
+const { ethers } = require('ethers');
+const Config = require('../../config/Config');
+
+var provider, signer, currentBlockNumber, blocksDaily;
+var masterchefPoolIds = [];
+var minichefRewarders = [];
 
 // Authenticate our wallet
 if (CONFIG.EXECUTION.ENABLED) {
-    web3.eth.accounts.wallet.add(CONFIG.WALLET.KEY);
     console.log(`WARNING!! Test mode is disabled. Real harvesting might begin!!`);
+}
+
+const selectBestProvider = async () => {
+
+    for (const url of PROVIDERS_URL) {
+        const currentProvider = new ethers.providers.
+            StaticJsonRpcProvider(url);
+
+        //do a quick call to check if the node is sync
+        try {
+            //avalanche burn address
+            await currentProvider.getBalance('0x0100000000000000000000000000000000000000');
+            return currentProvider;
+        } catch (error) {
+            console.error(error);
+        }
+    }
+    if (!provider) {
+        throw Error("Can't stabilish connection with the blockchain.");
+    }
 }
 
 // Globals to manage consistent scheduling with a window of variance
@@ -20,63 +62,406 @@ if (CONFIG.EXECUTION.ENABLED) {
 let executionWindowCenter = Date.now();
 let executionDrift = 0;
 
-// Manually trigger first harvest cycle
-DiscordBot.login(CONFIG.DISCORD.TOKEN).then(harvest);
+//if execution is enabled it makes a window, if not it just harvests in testmode
+const scheduledHarvest =
+    CONFIG.EXECUTION.ENABLED && CONFIG.EXECUTION.CONTAINER_MODE
+        ? scheduleNextHarvest
+        : harvest;
 
+scheduledHarvest();
 
-function harvest() {
-    initHarvests()
-        .then(addRequirements)
+async function harvest() {
+    const harvests = await initHarvests();
+    await addRequirements(harvests)
         .then(addCalculations)
-        .then(addTx)
-        .then(addGas)
+        .then(addEarnTx)
+        .then(addHarvestTx)
+        .then(addLeverageTx)
+        .then(addDeleverageTx)
         .then(addDecisions)
         .then(doHarvesting)
         .then(doEarning)
-        .then(scheduleNextHarvest)
+        .then(doLeveraging)
+        .then(doSync)
+        .then(doDeleveraging)
+        .then(sendDiscord)
+        .then(async () => { await doOptimize(signer) })
+        .then(() => {
+            if (CONFIG.EXECUTION.CONTAINER_MODE) {
+                process.exit();
+            } else {
+                scheduleNextHarvest();
+            }
+        })
         .catch(handleError);
 }
 
-async function initHarvests() {
-    const harvests = [];
+async function getSnowglobes() {
+    const gauge_proxy = new ethers.Contract(WANTS.GAUGE_PROXY_ADDRESS, ABI.GAUGE_PROXY, signer);
 
-    const gasPrice = await web3.eth.getGasPrice();
+    const pools = await gauge_proxy.tokens();
 
-    for (const [wantAddress, friendlyName] of Object.entries(CONFIG.WANTS)) {
-        const { controller, want, snowglobe, strategy } = await initializeContracts(CONFIG.CONTROLLERS, wantAddress);
-        const snowglobeSymbol = await snowglobe.methods.symbol().call();
-        const wantSymbol = await want.methods.symbol().call();
-        const wantDecimals = parseInt(await want.methods.decimals().call());
+    return [
+        // remove omitted overrides
+        ...pools.filter(pool => !WANTS.OVERRIDE_OMIT.includes(pool)),
 
-        harvests.push({
-            name: friendlyName,
-            controller,
-            want,
-            wantSymbol,
-            wantDecimals,
-            snowglobe,
-            snowglobeSymbol,
-            strategy,
-            gasPrice,
+        // append add overrides
+        ...WANTS.OVERRIDE_ADD,
+    ];
+}
+
+async function initHarvests(retrys = 0) {
+    provider = await selectBestProvider();
+    signer = new ethers.Wallet(CONFIG.WALLET.KEY, provider);
+
+    const gasPrice = await provider.getGasPrice();
+    //we shouldnt harvest if the gas price is too high
+    if (gasPrice > MAX_GAS_PRICE) {
+        if (retrys > 35) { //try 6 hours
+            throw new Error("Tried too many times, aborting.");
+        }
+        console.log("Gas too high, awaiting 10min before trying again.");
+        await Util.wait(600000); //wait 10 minutes
+        return initHarvests(retrys += 1);
+    }
+
+    const getBlocks24h = async (currentBlockNumber) => {
+        let currentBlock, yesterdayBlock;
+        await Promise.all([
+            provider.getBlock(currentBlockNumber),
+            provider.getBlock(currentBlockNumber - 20000)
+        ]).then(res => {
+            currentBlock = res[0]
+            yesterdayBlock = res[1]
+        });
+
+        const secondsInDay = 86400;
+
+        return ((secondsInDay / (currentBlock.timestamp - yesterdayBlock.timestamp)) * 20000) * 0.85;
+    }
+
+    currentBlockNumber = await provider.getBlockNumber();
+    blocksDaily = Math.floor(await getBlocks24h(currentBlockNumber));
+
+    const snowglobes = await getSnowglobes();
+
+    const handleRejection = (snowglobe, err) => {
+        console.error(`Could not initialize contracts for snowglobe (${Util.cchainAddressLink(snowglobe)})`);
+        console.error(err);
+    };
+
+    const masterchefs = [AXIAL_MASTERCHEF, TJ_MASTERCHEF];
+    const pangolinMinichef = '0x1f806f7C8dED893fd3caE279191ad7Aa3798E928';
+
+    for (const address of masterchefs) {
+        const mcContract = new ethers.Contract(address, ABI.MASTERCHEF_V3, signer);
+        const poolLength = await mcContract.poolLength();
+
+        let arrayPoolInfo = [];
+        for (let i = 0; i < poolLength; i++) {
+            const poolInfo = await mcContract.poolInfo(i);
+            arrayPoolInfo.push(poolInfo);
+        }
+        masterchefPoolIds.push(arrayPoolInfo);
+    }
+
+    const pangolinMinichefContract = new ethers.Contract(pangolinMinichef, ABI.MINICHEF_V2, signer);
+    const minichefLpTokens = await pangolinMinichefContract.lpTokens();
+    for (let i = 0; i < minichefLpTokens.length; i++) {
+        const rewarderAddress = await pangolinMinichefContract.rewarder(i);
+        minichefRewarders.push({
+            rewarderAddress,
+            address: minichefLpTokens[i],
         });
     }
 
-    return harvests;
+    const results = [];
+    for (const snowglobeAddress of snowglobes) {
+        try {
+            const { controller, want, snowglobe, strategy, type, wantAddress, strategyName } = await initializeContracts(WANTS.CONTROLLERS, snowglobeAddress);
+            const snowglobeSymbol = await snowglobe.symbol();
+            const wantSymbol = await want.symbol();
+            const wantDecimals = parseInt(await want.decimals());
+
+            let name;
+            switch (type) {
+                case "LP":
+                    const token0_addr = await want.token0();
+                    const token1_addr = await want.token1();
+                    const token0 = new ethers.Contract(token0_addr, ABI.ERC20, signer);
+                    const token1 = new ethers.Contract(token1_addr, ABI.ERC20, signer);
+                    const token0_name = await token0.symbol();
+                    const token1_name = await token1.symbol();
+                    name = `${token0_name}-${token1_name}`;
+                    break;
+                default:
+                    name = wantSymbol;
+                    break;
+            }
+
+            results.push({
+                name,
+                strategyName,
+                type,
+                controller,
+                want,
+                wantSymbol,
+                wantDecimals,
+                wantAddress,
+                snowglobe,
+                snowglobeSymbol,
+                strategy,
+                gasPrice,
+            });
+        } catch (error) {
+            console.log(error.message);
+        }
+    };
+    return results;
 }
 
-function addRequirements(harvests) {
-    const addHarvestFees = async (harvest) => ({
-        ...harvest,
-        harvestable: web3.utils.toBN(await harvest.strategy.methods.getHarvestable().call()),
-        treasuryFee: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
-        treasuryMax: web3.utils.toBN(await harvest.strategy.methods.performanceTreasuryFee().call()),
-        balance: web3.utils.toBN(await harvest.snowglobe.methods.balance().call()),
-        available: web3.utils.toBN(await harvest.snowglobe.methods.available().call()),
-        priceWAVAX: await estimatePriceOfAsset(WAVAX_ADDRESS, 18),
-        pricePNG: await estimatePriceOfAsset(PNG_ADDRESS, 18),
-        priceWant: await getPoolShareAsUSD(harvest.want),
-    });
-    return Promise.all(harvests.map(addHarvestFees))
+async function addRequirements(harvests) {
+    const priceMap = async (harvest, isAxial, isPlatypus) => {
+        if (isAxial) {
+            return await estimatePriceOfAsset(AXIAL_ADDRESS, 18);
+        }
+
+        if (isPlatypus) {
+            return await estimatePriceOfAsset(PTP_ADDRESS, 18);
+        }
+
+        switch (harvest.wantSymbol) {
+            case 'PGL': case 'PNG': return await estimatePriceOfAsset(PNG_ADDRESS, 18);
+            case 'JLP': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
+            case 'xJOE': return await estimatePriceOfAsset(JOE_ADDRESS, 18);
+        }
+
+        switch (harvest.type) {
+            case 'BENQI':
+                return await estimatePriceOfAsset(BENQI_ADDRESS, 18);
+            case 'BANKER':
+                return await estimatePriceOfAsset(JOE_ADDRESS, 18);
+            case 'AAVE':
+                return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+            case 'TEDDY':
+                return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+            default:
+                return await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+        }
+    }
+
+    const rewardMap = (harvest, isAxial, isPlatypus) => {
+        if (isAxial) {
+            return {
+                symbol: "AXIAL",
+                address: AXIAL_ADDRESS
+            };
+        }
+
+        if (isPlatypus) {
+            return {
+                symbol: "PTP",
+                address: PTP_ADDRESS
+            };
+        }
+
+        switch (harvest.type) {
+            case 'BENQI':
+                return {
+                    symbol: "QI",
+                    address: QI_ADDRESS
+                };
+            case 'AAVE':
+                return {
+                    symbol: "WAVAX",
+                    address: WAVAX_ADDRESS
+                };
+            case 'BANKER':
+                return {
+                    symbol: "JOE",
+                    address: JOE_ADDRESS
+                };
+            case 'TEDDY':
+                return {
+                    symbol: "WAVAX",
+                    address: WAVAX_ADDRESS
+                };
+        }
+        switch (harvest.wantSymbol) {
+            case 'PGL': case 'PNG': return {
+                symbol: "PNG",
+                address: PNG_ADDRESS
+            };
+            case 'JLP': return {
+                symbol: "JOE",
+                address: JOE_ADDRESS
+            };
+            default: return {
+                symbol: harvest.wantSymbol,
+                address: harvest.wantAddress
+            };
+        }
+    };
+
+    const addHarvestFees = async (harvest) => {
+        let isAxial = false;
+        let isPlatypus = false;
+        let masterchefPlatypus;
+
+        try {
+            masterchefPlatypus = await harvest.strategy.masterChefPlatypus();
+            isPlatypus = true;
+        } catch (error) {
+            //not platypus pool
+        }
+
+        try {
+            await harvest.strategy.masterChefAxialV3();
+            isAxial = true;
+        } catch (error) {
+            //not axial pool
+        }
+
+        if (!priceMap(harvest, isAxial, isPlatypus) ||
+            !rewardMap(harvest, isAxial, isPlatypus)) {
+            throw new Error(`Unknown symbol: ${harvest.wantSymbol}`);
+        }
+
+        let harvestable;
+        let harvestOverride = false;
+
+        //account for extra rewards
+        try {
+            if (harvest.type === "AAVE") {
+                harvestable = await harvest.strategy.getWavaxAccrued();
+            } else {
+                harvestable = await harvest.strategy.getHarvestable();
+
+                try {
+                    const harvestedToken = rewardMap(harvest, isAxial, isPlatypus);
+                    const tokenContract = new ethers.Contract(harvestedToken.address, ABI.ERC20, signer);
+                    const storedToken = await tokenContract.balanceOf(harvest.strategy.address);
+                    harvestable = harvestable.add(storedToken);
+                } catch (error) {
+                    console.error("Error fetching strategy balance.")
+                    console.error(error);
+                }
+
+            }
+        } catch (err) {
+            // This fails for certain strategies where the strategy lacks a `rewarder`
+            // Assuming the harvest should happen for now
+            harvestable = ethers.BigNumber.from("0");
+            harvestOverride = true;
+        }
+
+        let bonusTokens = [];
+        try {
+            let masterchefAddress, poolInfo;
+            if (harvest.strategyName.startsWith("StrategyJoe")) {
+                masterchefAddress = TJ_MASTERCHEF;
+                poolInfo = getPoolInfo(harvest.wantAddress, masterchefAddress);
+
+            } else if (harvest.strategyName.startsWith("StrategyAxial")) {
+                masterchefAddress = AXIAL_MASTERCHEF;
+                poolInfo = getPoolInfo(harvest.wantAddress, masterchefAddress);
+            }
+
+            if (poolInfo && poolInfo.poolId > -1) {
+                const masterchefContract = new ethers.Contract(masterchefAddress, ABI.MASTERCHEF_V3, signer);
+                const strategyInfo = await masterchefContract.pendingTokens(poolInfo.poolId, harvest.strategy.address);
+                const addressBonusToken = strategyInfo.bonusTokenAddress;
+
+                if (strategyInfo.pendingBonusToken.gt("0x0")) {
+                    const bonusTokenContract = new ethers.Contract(addressBonusToken, ABI.ERC20, signer);
+                    const balanceOfRewarder = await bonusTokenContract.balanceOf(poolInfo.poolInfo.rewarder);
+                    if (balanceOfRewarder.gt("0x0")) {
+                        let harvestableBonusToken = strategyInfo.pendingBonusToken;
+                        const decimalsBonusToken = await bonusTokenContract.decimals();
+                        const balanceOfStrategy = await bonusTokenContract.balanceOf(harvest.strategy.address);
+
+                        harvestableBonusToken = harvestableBonusToken.add(balanceOfStrategy);
+                        const bonusRewardPrice = await estimatePriceOfAsset(addressBonusToken, decimalsBonusToken);
+
+                        bonusTokens.push(
+                            {
+                                decimals: decimalsBonusToken,
+                                address: addressBonusToken,
+                                harvestable: harvestableBonusToken,
+                                price: bonusRewardPrice
+                            }
+                        )
+                    }
+                }
+            }
+
+            if (harvest.strategyName.startsWith("StrategyPng")) {
+                const poolIndex = minichefRewarders.findIndex(o => o.address.toLowerCase() === harvest.wantAddress.toLowerCase());
+
+                if (poolIndex > -1 && minichefRewarders[poolIndex].rewarderAddress !== ZERO_ADDRESS) {
+                    const rewarderContract = new ethers.Contract(minichefRewarders[poolIndex].rewarderAddress, ABI.PANGOLIN_REWARDER, signer);
+                    const extraMultipliers = await rewarderContract.getRewardMultipliers();
+                    const addressBonusTokens = await rewarderContract.getRewardTokens();
+
+                    for (let i = 0; i < extraMultipliers.length; i++) {
+                        const extraMultiplier = extraMultipliers[i];
+
+                        if (harvestable > 0 && extraMultiplier > 0) {
+                            const addressBonusToken = addressBonusTokens[i];
+                            let harvestableBonusToken = harvestable.mul(extraMultiplier).div("1" + "0".repeat(18));
+
+                            const bonusTokenContract = new ethers.Contract(addressBonusToken, ABI.ERC20, signer);
+                            const balanceOfRewarder = await bonusTokenContract.balanceOf(minichefRewarders[poolIndex].rewarderAddress);
+
+                            if (balanceOfRewarder.gt("0x0")) {
+                                const decimalsBonusToken = await bonusTokenContract.decimals();
+                                const balanceOfStrategy = await bonusTokenContract.balanceOf(harvest.strategy.address);
+                                harvestableBonusToken = harvestableBonusToken.add(balanceOfStrategy);
+                                const bonusRewardPrice = await estimatePriceOfAsset(addressBonusToken, decimalsBonusToken);
+
+                                bonusTokens.push({
+                                    address: addressBonusToken,
+                                    harvestable: harvestableBonusToken,
+                                    decimals: decimalsBonusToken,
+                                    price: bonusRewardPrice
+                                })
+                            }
+                        }
+                    }
+                }
+            }
+
+        } catch (error) {
+            console.error(error);
+        }
+
+        var keep, keepMax;
+        try {
+            keep = ethers.BigNumber.from(await harvest.strategy.keep());
+            keepMax = ethers.BigNumber.from(await harvest.strategy.keepMax());
+        } catch (error) {
+            //old strategy
+        }
+        return {
+            ...harvest,
+            harvestable,
+            harvestOverride,
+            harvestSymbol: rewardMap(harvest, isAxial, isPlatypus).symbol,
+            keep,
+            keepMax,
+            treasuryFee: ethers.BigNumber.from(await harvest.strategy.performanceTreasuryFee()),
+            treasuryMax: ethers.BigNumber.from(await harvest.strategy.performanceTreasuryMax()),
+            balance: await harvest.snowglobe.balance(),
+            available: await harvest.snowglobe.available(),
+            priceWAVAX: await priceMap({ type: 'ERC20', wantSymbol: 'WAVAX' }),
+            rewardPrice: await priceMap(harvest, isAxial, isPlatypus),
+            priceWant: harvest.type === 'LP'
+                ? await getPoolShareAsUSD(harvest.want)
+                : await estimatePriceOfAsset(harvest.wantAddress, harvest.wantDecimals, isAxial, isPlatypus),
+            bonusTokens
+        }
+    };
+    return await Promise.all(harvests.map(addHarvestFees))
         .catch(err => {
             console.error(`Error fetching requirements from strategy`);
             throw err;
@@ -84,183 +469,491 @@ function addRequirements(harvests) {
 }
 
 function addCalculations(harvests) {
-    const addHarvestGain = async (harvest) => ({
-        ...harvest,
-        gainWAVAX: harvest.harvestable.mul(harvest.pricePNG).div(harvest.priceWAVAX),
-        gainUSD: harvest.harvestable.mul(harvest.pricePNG).div(Util.offset(18)),
-        ratio: harvest.available.muln(100).div(harvest.balance),
-        availableUSD: harvest.available.mul(harvest.priceWant).div(Util.offset(harvest.wantDecimals)),
-    });
-    return Promise.all(harvests.map(addHarvestGain))
-        .catch(err => {
-            console.error(`Error adding calculations`);
-            throw err;
-        });
+    const addHarvestGain = (harvest) => {
+        let gainWAVAX = harvest.harvestable.mul(harvest.rewardPrice).div(harvest.priceWAVAX);
+        let gainUSD = harvest.harvestable.mul(harvest.rewardPrice).div(Util.offset(18));
+
+        try {
+            const bonusTokens = harvest.bonusTokens;
+            for (const bonusToken of bonusTokens) {
+                if (bonusToken.address && bonusToken.harvestable && bonusToken.price) {
+                    const gainWAVAXBonus = bonusToken.harvestable.mul(bonusToken.price).div(harvest.priceWAVAX);
+                    const gainUSDBonus = bonusToken.harvestable.mul(bonusToken.price).div(Util.offset(18));
+
+                    gainWAVAX = gainWAVAX.add(gainWAVAXBonus);
+                    gainUSD = gainUSD.add(gainUSDBonus);
+                }
+            }
+        } catch (error) {
+            console.error(error);
+        }
+
+        const ratio = harvest.balance.isZero() ? ethers.BigNumber.from(100) : harvest.available.mul(100).div(harvest.balance);
+        const adjust = (harvest.wantDecimals - 18);
+        const availableUSD = harvest.available.mul(harvest.priceWant).div(Util.offset(18 + adjust));
+
+        return {
+            gainWAVAX,
+            gainUSD,
+            ratio,
+            availableUSD,
+            ...harvest,
+        }
+    };
+    return harvests.map(addHarvestGain);
 }
 
-function addTx(harvests) {
-    const addHarvestTx = async (harvest) => ({
-        ...harvest,
-        harvestTx: harvest.strategy.methods.harvest(),
-        earnTx: harvest.snowglobe.methods.earn(),
-    });
-    return Promise.all(harvests.map(addHarvestTx))
-        .catch(err => {
-            console.error(`Error adding tx`);
-            throw err;
-        });
+async function addEarnTx(harvests) {
+    const addTx = async (harvest) => {
+        const earnTx = harvest.snowglobe.earn;
+        const snowglobeUnsigned = new ethers.Contract(harvest.snowglobe.address, ABI.SNOWGLOBE, provider);
+        const estGas = await snowglobeUnsigned.estimateGas.earn({ from: CONFIG.WALLET.ADDRESS });
+        const earnGas = estGas > MAX_GAS_LIMIT_EARN ? estGas : MAX_GAS_LIMIT_EARN;
+        return {
+            ...harvest,
+            earnTx,
+            earnGas: ethers.BigNumber.from(earnGas),//await earnTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
+        };
+    };
+    const handleRejection = (harvest, err) => {
+        console.error(`Skipping ${harvest.name} due to earn() error (snowglobe: ${harvest.snowglobe.address})`);
+        console.error(err);
+    };
+    return Promise.allSettled(harvests.map(addTx))
+        .then(results => handleSettledPromises(results, harvests, handleRejection));
 }
 
-async function addGas(harvests) {
-    const addHarvestGas = async (harvest) => ({
-        ...harvest,
-        harvestGas: await harvest.harvestTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
-        earnGas: await harvest.earnTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
-    });
-    return Promise.all(harvests.map(addHarvestGas))
-        .catch(err => {
-            console.error(`Error adding gas`);
-            throw err;
-        });
+async function addHarvestTx(harvests) {
+    const addTx = async (harvest) => {
+        const harvestTx = harvest.strategy.harvest;
+        const strategyUnsigned = new ethers.Contract(harvest.strategy.address, ABI.STRATEGY, provider);
+        const estGas = await strategyUnsigned.estimateGas.harvest({ from: CONFIG.WALLET.ADDRESS });
+        const harvestGas = estGas > MAX_GAS_LIMIT_HARV ? estGas : MAX_GAS_LIMIT_HARV;
+        //avoid rate limiting by snowtrace
+        await Util.wait(Math.floor((300000*Math.random())));
+        const harvestedLast24h = await ran24h(harvest.strategy.address, "0x4641257d");
+        console.log(harvestedLast24h, harvest.strategy.address);
+        return {
+            ...harvest,
+            harvestTx,
+            harvestedLast24h,
+            harvestGas: ethers.BigNumber.from(harvestGas),//await harvestTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
+        };
+    };
+    const handleRejection = (harvest, err) => {
+        console.error(`Skipping ${harvest.name} due to harvest() error (strategy: ${Util.cchainAddressLink(harvest.strategy.address)})`);
+        console.error(err);
+    };
+    return Promise.allSettled(harvests.map(addTx))
+        .then(results => handleSettledPromises(results, harvests, handleRejection));
+}
+
+async function addLeverageTx(harvests) {
+    const addTx = async (harvest) => {
+        if (harvest.type === 'BENQI' || harvest.type === 'AAVE' || harvest.type === 'BANKER') {
+            try {
+                //test if the strategy can be leveraged
+                await harvest.strategy.getMaxLeverage();
+
+                const leverageTx = harvest.strategy.leverageToMax;
+                const strategyUnsigned = new ethers.Contract(harvest.strategy.address, ABI.STRATEGY, provider);
+                const estGas = await strategyUnsigned.estimateGas.leverageToMax({ from: CONFIG.WALLET.ADDRESS });
+                const leverageGas = estGas > MAX_GAS_LIMIT_LEV ? estGas : MAX_GAS_LIMIT_LEV;
+                return {
+                    ...harvest,
+                    leverageTx,
+                    leverageGas: ethers.BigNumber.from(leverageGas), //await leverageTx.estimateGas({from: CONFIG.WALLET.ADDRESS}),
+                }
+            } catch (error) {
+                console.log(harvest.name, "Leverage");
+                console.log(error.message);
+                //cant be leveraged
+                return { ...harvest };
+            }
+        } else {
+            return { ...harvest };
+        }
+    }
+
+    const handleRejection = (harvest, err) => {
+        console.error(`Skipping ${harvest.name} due to leverageToMax() error (strategy: ${Util.cchainAddressLink(harvest.strategy.address)})`);
+        console.error(err);
+    };
+    return Promise.allSettled(harvests.map(addTx))
+        .then(results => handleSettledPromises(results, harvests, handleRejection));
+}
+
+async function addDeleverageTx(harvests) {
+    const addTx = async (harvest) => {
+        if (harvest.type === 'BENQI' || harvest.type === 'AAVE' || harvest.type === 'BANKER') {
+            try {
+                //test if the strategy can be leveraged
+                await harvest.strategy.getMaxLeverage();
+
+                const strategyUnsigned = new ethers.Contract(harvest.strategy.address, ABI.STRATEGY, provider);
+                const unleveragedSupply = await strategyUnsigned.callStatic["getSuppliedUnleveraged()"]({ from: CONFIG.WALLET.ADDRESS, gasLimit: 7_000_000 });
+                const idealSupply = await strategyUnsigned.callStatic["getLeveragedSupplyTarget(uint256)"](unleveragedSupply, { from: CONFIG.WALLET.ADDRESS, gasLimit: 7_000_000 });
+
+                const optimizedIndex = OPTIMIZER_POOLS.findIndex(
+                    o => o.snowglobe.toLowerCase() === harvest.snowglobe.address.toLowerCase()
+                );
+
+                let optimizedPool;
+                if (optimizedIndex > -1) {
+                    optimizedPool = OPTIMIZER_POOLS[optimizedIndex].contracts.find(
+                        o => o.strategy.toLowerCase() === harvest.strategy.address.toLowerCase()
+                    )
+                }
+
+                const snowglobeAddr = optimizedPool ? optimizedPool.fixedSnowglobe : harvest.snowglobe.address;
+
+                const poolState = await Util.getPoolAPIInfo(snowglobeAddr);
+                const deposited = await strategyUnsigned.balanceOfPool();
+                const supplied = await strategyUnsigned.getSuppliedView();
+                const currLev = supplied / deposited;
+
+                const notSafe = await strategyUnsigned.callStatic["sync()"]({ from: CONFIG.WALLET.ADDRESS, gasLimit: 7_000_000 });
+                const estGasSync = await strategyUnsigned.estimateGas.sync({ from: CONFIG.WALLET.ADDRESS });
+                const estGasDeleverageToMin = await strategyUnsigned.estimateGas.deleverageToMin({ from: CONFIG.WALLET.ADDRESS });
+
+                const syncTx = harvest.strategy.sync;
+                const deleverageTx = harvest.strategy.deleverageUntil;
+
+                const syncGas = estGasSync > MAX_GAS_LIMIT_HARV ? estGasSync : MAX_GAS_LIMIT_HARV;
+                const deleverageGas = estGasDeleverageToMin > MAX_GAS_LIMIT_HARV ? estGasDeleverageToMin : MAX_GAS_LIMIT_HARV;
+                return {
+                    ...harvest,
+                    syncTx,
+                    deleverageTx,
+                    unleveragedSupply,
+                    idealSupply,
+                    notSafe,
+                    syncGas: ethers.BigNumber.from(syncGas),
+                    deleverageGas: ethers.BigNumber.from(deleverageGas),
+                    currLev,
+                    poolState
+                }
+            } catch (error) {
+                console.log(harvest.name, "Deleverage");
+                console.log(error.message);
+                //cant be synced or deleveraged
+                return { ...harvest };
+            }
+        } else {
+            return { ...harvest };
+        }
+    }
+
+    const handleRejection = (harvest, err) => {
+        console.error(`Skipping ${harvest.name} due to sync() error (strategy: ${Util.cchainAddressLink(harvest.strategy.address)})`);
+        console.error(err);
+    };
+    return Promise.allSettled(harvests.map(addTx))
+        .then(results => handleSettledPromises(results, harvests, handleRejection));
 }
 
 function addDecisions(harvests) {
     const addHarvestDecision = (harvest) => {
         console.log(`Determining execution decisions for ${harvest.name}`);
-        const cost = web3.utils.toBN(harvest.harvestGas).mul(web3.utils.toBN(harvest.gasPrice));
-        const gain = harvest.gainWAVAX.mul(harvest.treasuryFee).div(harvest.treasuryMax);
-        const FIVE_THOUSAND_USD = web3.utils.toBN('5000' + '0'.repeat(18));
-        const harvestDecision = cost.lt(gain);
+        const cost = harvest.harvestGas.mul(harvest.gasPrice);
+        var gain;
+        if (harvest.treasuryFee.gt("0x0")) {
+            gain = harvest.gainWAVAX.mul(harvest.treasuryFee).div(harvest.treasuryMax);
+        } else {
+            gain = harvest.gainWAVAX.mul(harvest.keep).div(harvest.keepMax);
+        }
+        const ONE_THOUSAND_USD = ethers.BigNumber.from('1000' + '0'.repeat(18));
+        const isFolding = (harvest.type === "BANKER" || harvest.type === "AAVE" || harvest.type === "BENQI");
+
+        let harvestDecision = (cost.lt(gain)
+            || harvest.harvestOverride
+            || (isFolding && harvest.poolState
+                && !harvest.poolState.deprecated
+                && harvest.poolState.tvlStaked > MIN_TVL_TO_HARVEST_FOLDING)
+            || harvest.name === "QI")
+            && !harvest.harvestedLast24h //added QI manually because the benqi rewarder contract have a bad view of pending rewards
+
+        if (harvest.harvestOverride && !cost.lt(gain)) {
+            console.log(`Harvest decision overridden by flag!`);
+        }
+
+        let earnDecision = harvest.ratio.gte(1) && harvest.availableUSD.gt(ONE_THOUSAND_USD);
+
+        let leverageDecision = false, syncDecision = false, deleverageDecision = false;
+        if (harvest.leverageTx && harvest.syncTx && harvest.deleverageTx) {
+            //if it's not safe we want to drop some of leveraging
+            if (harvest.poolState) {
+                const shouldLeverage = (harvest.poolState.dailyAPR > MIN_APR_TO_LEVERAGE
+                    && !harvest.poolState.deprecated
+                    && harvest.poolState.tvlStaked > MIN_TVL_TO_HARVEST_FOLDING
+                );
+                console.log(harvest.currLev, harvest.notSafe, harvest.poolState.dailyAPR, MIN_APR_TO_LEVERAGE)
+                if (harvest.currLev > 1.2 && !shouldLeverage) {
+                    //we shouldn't be leveraging this pool!
+                    deleverageDecision = true;
+                }
+                syncDecision = (!deleverageDecision && harvest.notSafe);
+
+                if (!deleverageDecision && !syncDecision && shouldLeverage) {
+                    if (harvest.unleveragedSupply.lte(harvest.idealSupply)) {
+                        //if it's safe we gonna leverage
+                        leverageDecision = true;
+                    }
+                }
+            } else {
+                if (harvest.currLev > 1.2) {
+                    //if can't find the pool just deleverage stuff for safety
+                    deleverageDecision = true;
+                }
+            }
+        }
+        console.log(harvest.type, harvest.name, gain / 1e18, cost / 1e18);
         console.log(`Harvest decision: ${harvestDecision}`);
-        const earnDecision = harvest.ratio.gten(1) && harvest.availableUSD.gt(FIVE_THOUSAND_USD);
         console.log(`Earn decision: ${earnDecision}`);
+        console.log(`Leverage decision: ${leverageDecision}`);
+        console.log(`Sync decision: ${syncDecision}`);
+        console.log(`Deleverage decision: ${deleverageDecision}`);
         return {
             ...harvest,
             harvestDecision,
             earnDecision,
+            leverageDecision,
+            deleverageDecision,
+            syncDecision
         };
     };
-    return harvests.map(addHarvestDecision);
+    return harvests.map(obj => addHarvestDecision(obj));
 }
 
+const executeTx = async (harvest, decision, tx, type, params = [], lastTry = 0) => {
+    if (!decision) return null;
+    if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would ${type} strategy ${harvest.name} (${harvest.strategy.address}). Set CONFIG.EXECUTION.ENABLED to enable harvesting`);
+    console.log(`${type} strategy address: ${harvest.strategy.address} (${harvest.name}) ...`);
+    try {
+        //add extra gas to be safe
+        const plusGas = ethers.utils.parseUnits("5", 9);
+        const gasPrice = (await provider.getGasPrice()).add(plusGas);
+        let transaction
+        if (params.length > 0) {
+            transaction = await tx(...params, { gasLimit: 7_000_000, gasPrice: gasPrice });
+        } else {
+            transaction = await tx({ gasLimit: 7_000_000, gasPrice: gasPrice });
+        }
+        const finishedTx = await transaction.wait(1);
+        return finishedTx;
+    } catch (error) {
+        console.log(error.message);
+        if (RETRY_TXS > lastTry) {
+            return executeTx(harvest, decision, tx, type, params, lastTry += 1)
+        }
+        return null;
+    }
+};
 
 async function doHarvesting(harvests) {
-    let nonce = await web3.eth.getTransactionCount(CONFIG.WALLET.ADDRESS);
-    const executeHarvestTx = async (harvest) => {
-        if (!harvest.harvestDecision) return null;
-        if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would have harvested strategy ${harvest.name} (${harvest.strategy._address}). Set CONFIG.EXECUTION.ENABLED to enable harvesting`);
-        console.log(`Harvesting strategy address: ${harvest.strategy._address} (${harvest.name}) ...`);
-        return await harvest.harvestTx.send({ from: CONFIG.WALLET.ADDRESS, gas: harvest.harvestGas, gasPrice: harvest.gasPrice, nonce: nonce++ });
-    };
+    let results = [];
+    for (const harvest of harvests) {
+        results.push(await executeTx(harvest, harvest.harvestDecision, harvest.harvestTx, "Harvest"));
+    }
 
-    const results = await Promise.allSettled(harvests.map(executeHarvestTx));
-    logHarvestingResults({ results, harvests });
-    await discordHarvestUpdate({ results, harvests });
-    return harvests;
+    logResults({ results, harvests, type: "Harvest" });
+    var payload = {
+        harvests, results: {
+            harvest: results
+        }
+    };
+    return payload;
 }
 
-async function doEarning(harvests) {
+async function doEarning(payload) {
     await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning earn() calls for the provider to sync the nonce
 
-    let nonce = await web3.eth.getTransactionCount(CONFIG.WALLET.ADDRESS);
-    const executeEarnTx = async (harvest) => {
-        if (!harvest.earnDecision) return null;
-        if (!CONFIG.EXECUTION.ENABLED) return console.log(`Would have swept ${harvest.snowglobe._address}. Set CONFIG.EXECUTION.ENABLED to enable sweeping`);
-        console.log(`Sweeping snowglobe address: ${harvest.snowglobe._address} (${harvest.name}) ...`);
-        return await harvest.earnTx.send({ from: CONFIG.WALLET.ADDRESS, gas: harvest.earnGas, gasPrice: harvest.gasPrice, nonce: nonce++ });
-    };
+    let results = [];
+    for (const harvest of payload.harvests) {
+        results.push(await executeTx(harvest, harvest.earnDecision, harvest.earnTx, "Earn"));
+    }
 
-    const results = await Promise.allSettled(harvests.map(executeEarnTx));
-    logEarnResults({ results, harvests });
-    await discordEarnUpdate({ results, harvests });
-    return harvests;
+    logResults({ results, harvests: payload.harvests, type: "Earn" });
+
+    payload.results.earn = results;
+
+    return payload;
 }
 
+async function doLeveraging(payload) {
+    await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning earn() calls for the provider to sync the nonce
 
-function logHarvestingResults({ results, harvests }) {
-    for (let i = 0; i < results.length; i++) {
-        const harvest = harvests[i];
-        if (!harvest.harvestDecision) continue;
-        const {reason, value} = results[i];
+    let results = [];
+    for (const harvest of payload.harvests) {
+        results.push(await executeTx(harvest, harvest.leverageDecision, harvest.leverageTx, "Leverage"));
+    }
+
+    logResults({ results, harvests: payload.harvests, type: "Leverage" });
+
+    payload.results.leverage = results;
+
+    return payload;
+}
+
+async function doSync(payload) {
+    await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning earn() calls for the provider to sync the nonce
+
+    let results = [];
+    for (const harvest of payload.harvests) {
+        results.push(await executeTx(harvest, harvest.syncDecision, harvest.syncTx, "Sync"));
+    }
+
+    logResults({ results, harvests: payload.harvests, type: "Sync" });
+
+    payload.results.sync = results;
+
+    return payload;
+}
+
+async function doDeleveraging(payload) {
+    await Util.wait(5000); // Allow arbitrarily 5 seconds before beginning earn() calls for the provider to sync the nonce
+
+    let results = [];
+    for (const harvest of payload.harvests) {
+        let params = [];
+        if (harvest.deleverageDecision) {
+            const deposited = await harvest.strategy.balanceOfPool();
+            const BNSupply = floatToBN((deposited / 10 ** harvest.wantDecimals) * 1.01, harvest.wantDecimals);
+            params = [BNSupply];
+            console.log(harvest.name, harvest.type);
+            console.log(deposited / 10 ** harvest.wantDecimals, params[0] / 10 ** harvest.wantDecimals);
+        }
+        results.push(
+            await executeTx(
+                harvest, harvest.deleverageDecision, harvest.deleverageTx, "Deleverage", params
+            )
+        );
+    }
+
+    logResults({ results, harvests: payload.harvests, type: "Deleverage" });
+
+    payload.results.deleverage = results;
+
+    return payload;
+}
+
+async function sendDiscord(payload) {
+    //we need to await for our discord calls when running at container mode, and we can't let it await
+    //between transactions because it opens margin for frontrunning
+
+    await discordUpdate({ results: payload.results, harvests: payload.harvests })
+}
+
+function logResults(params) {
+    for (let i = 0; i < params.results.length; i++) {
+        const harvest = params.harvests[i];
+        const txType = params.type;
+        const value = params.results[i];
+        switch (txType) {
+            case "Harvest":
+                if (!harvest.harvestDecision) {
+                    continue;
+                }
+                break;
+            case "Earn":
+                if (!harvest.earnDecision) {
+                    continue;
+                }
+                break;
+            case "Leverage":
+                if (!harvest.leverageDecision) {
+                    continue;
+                }
+                break;
+            case "Sync":
+                if (!harvest.syncDecision) {
+                    continue;
+                }
+                break;
+            case "Deleverage":
+                if (!harvest.deleverageDecision) {
+                    continue;
+                }
+                break;
+        }
         console.log(`--------------------------------------------------------------------`);
         if (value || !CONFIG.EXECUTION.ENABLED) {
-            // Successfully called harvest() or a test run
-            console.log(`Strategy:    ${harvest.name} (${value?.to ?? harvest.strategy._address})`);
-            console.log(`Reinvested:  ${Util.displayBNasFloat(harvest.harvestable, 18)} PNG ($${Util.displayBNasFloat(harvest.gainUSD, 18)})`);
+            // Successfully called transaction or a test run
+            console.log(`Snowglobe:   ${harvest.name} (${value?.to ?? harvest.snowglobe.address})`);
+            if (txType === "Harvest") {
+                console.log(`Reinvested:  ${harvest.harvestOverride ? 'Unknown' : Util.displayBNasFloat(harvest.harvestable, 18)} ${harvest.harvestSymbol} ($${harvest.harvestOverride ? '?.??' : Util.displayBNasFloat(harvest.gainUSD, 18)})`);
+            } else if (txType === "Earn") {
+                console.log(`${txType}:   ${Util.displayBNasFloat(harvest.available, harvest.wantDecimals, 5)} ${harvest.wantSymbol} ($${Util.displayBNasFloat(harvest.availableUSD, 18)})`);
+            } else {
+                console.log(`${txType}`)
+            }
             console.log(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
         } else {
-            // Failed to execute harvest()
-            console.error(`Failed to harvest for strategy ${value?.to ?? harvest.strategy._address} (${harvest.name})`);
-            console.error(reason);
+            // Failed to execute transaction
+            console.error(`Failed to ${txType} for snowglobe ${value?.to ?? harvest.snowglobe.address} (${harvest.name})`);
         }
     }
     console.log(`--------------------------------------------------------------------`);
-    return { results, harvests };
+    return params;
 }
 
-function logEarnResults({ results, harvests }) {
-    for (let i = 0; i < results.length; i++) {
-        const harvest = harvests[i];
-        if (!harvest.earnDecision) continue;
-        const {reason, value} = results[i];
-        console.log(`--------------------------------------------------------------------`);
-        if (value || !CONFIG.EXECUTION.ENABLED) {
-            // Successfully called earn() or a test run
-            console.log(`Snowglobe:   ${harvest.name} (${value?.to ?? harvest.snowglobe._address})`);
-            console.log(`Swept:       ${Util.displayBNasFloat(harvest.available, 18, 5)} ${harvest.wantSymbol} ($${Util.displayBNasFloat(harvest.availableUSD, 18)})`);
-            console.log(`Transaction: ${value?.transactionHash ?? '[real tx hash]'}`);
-        } else {
-            // Failed to execute earn()
-            console.error(`Failed to sweep for snowglobe ${value?.to ?? harvest.snowglobe._address} (${harvest.name})`);
-            console.error(reason);
-        }
-    }
-    console.log(`--------------------------------------------------------------------`);
-    return { results, harvests };
-}
-
-async function discordHarvestUpdate({ results, harvests }) {
+async function discordUpdate({ results, harvests }) {
     if (!CONFIG.EXECUTION.ENABLED) return console.log(`Discord notifications are disabled while in test mode`);
     if (!CONFIG.DISCORD.ENABLED) return console.log(`Did not notify discord. Set CONFIG.DISCORD.ENABLED to send notifications to #harvests`);
-
-    for (let i = 0; i< results.length; i++) {
-        const {reason, value} = results[i];
-        const harvest = harvests[i];
-        if (!harvest.harvestDecision) continue;
-        if (value) {
-            const embedObj = {
-                Color:'0x00aaff',
-                Title:`Strategy: ${harvest.name}`,
-                Thumbnail:Util.thumbnailLink(harvest.name),
-                URL:Util.cchainTransactionLink(value.transactionHash),
-            };
-            const message = `**Reinvested:**  ${Util.displayBNasFloat(harvest.harvestable, 18, 2)} **PNG**\n`+
-                            `**Value**:  $${Util.displayBNasFloat(harvest.gainUSD, 18, 2)}`;
-            embedObj.Description = message;
-            DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
+    for (let i = 0; i < harvests.length; i++) {
+        const notifList = [];
+        if (harvests[i].harvestDecision && results.harvest[i]) {
+            notifList.push({ harvest: true, txHash: results.harvest[i]?.transactionHash });
         }
-    }
-}
+        if (harvests[i].earnDecision && results.earn[i]) {
+            notifList.push({ earn: true, txHash: results.earn[i]?.transactionHash });
+        }
+        if (harvests[i].leverageDecision && results.leverage[i]) {
+            notifList.push({ leverage: true, txHash: results.leverage[i]?.transactionHash });
+        }
+        if (harvests[i].syncDecision && results.sync[i]) {
+            notifList.push({ sync: true, txHash: results.sync[i]?.transactionHash });
+        }
+        if (harvests[i].deleverageDecision && results.deleverage[i]) {
+            notifList.push({ deleverage: true, txHash: results.deleverage[i]?.transactionHash });
+        }
 
-async function discordEarnUpdate({ results, harvests }) {
-    if (!CONFIG.EXECUTION.ENABLED) return console.log(`Discord notifications are disabled while in test mode`);
-    if (!CONFIG.DISCORD.ENABLED) return console.log(`Did not notify discord. Set CONFIG.DISCORD.ENABLED to send notifications to #harvests`);
-
-    for (let i = 0; i< results.length; i++) {
-        const {reason, value} = results[i];
-        const harvest = harvests[i];
-        if (!harvest.earnDecision) continue;
-        if (value) {
-            const embedObj = {
-                Color:'0x00aaff',
-                Title:`Snowglobe: ${harvest.name}`,
-                Thumbnail:Util.thumbnailLink(harvest.name),
-                URL:Util.cchainTransactionLink(value.transactionHash),
+        for (const event of notifList) {
+            await Util.wait(3000);
+            const embed = {
+                "embeds": [
+                    {
+                        "title": null,
+                        "description": null,
+                        "url": Util.cchainTransactionLink(event.txHash),
+                        "color": 43775,
+                        "timestamp": new Date(Date.now()).toISOString()
+                    }
+                ]
             };
-            const message = `**Swept:**  ${Util.displayBNasFloat(harvest.available, 18, 5)} **${harvest.wantSymbol}**\n`+
-                            `**Value**:  $${Util.displayBNasFloat(harvest.availableUSD, 18, 2)}`;
-            embedObj.Description = message;
-            DiscordBot.sendMessage(DiscordBot.makeEmbed(embedObj), CONFIG.DISCORD.CHANNEL);
+
+            if (event.harvest) {
+                embed.embeds[0].title = `Strategy: ${harvests[i].name}`;
+                embed.embeds[0].description = `**Reinvested:**  ${harvests[i].harvestOverride ? 'Unknown' : Util.displayBNasFloat(harvests[i].harvestable, 18, 2)} **${harvests[i].harvestSymbol}**\n` +
+                    `**Value**:  $${harvests[i].harvestOverride ? '?.??' : Util.displayBNasFloat(harvests[i].gainUSD, 18, 2)}`;
+            } else if (event.earn) {
+                embed.embeds[0].title = `Snowglobe: ${harvests[i].name}`;
+                embed.embeds[0].description = `**Swept:**  ${Util.displayBNasFloat(harvests[i].available, harvests[i].wantDecimals, 5)} **${harvests[i].wantSymbol}**\n` +
+                    `**Value**:  $${Util.displayBNasFloat(harvests[i].availableUSD, 18, 2)}`;
+            } else if (event.leverage) {
+                embed.embeds[0].title = `Strategy: ${harvests[i].name}`;
+                embed.embeds[0].description = `**Leveraged**`;
+            } else if (event.sync) {
+                embed.embeds[0].title = `Strategy: ${harvests[i].name}`;
+                embed.embeds[0].description = `**Synced**`;
+            } else if (event.deleverage) {
+                embed.embeds[0].title = `Strategy: ${harvests[i].name}`;
+                embed.embeds[0].description = `**Deleveraged**`;
+            }
+
+            if (embed.embeds[0].title) {
+                await Util.sendDiscord(CONFIG.DISCORD.WEBHOOK_URL, embed);
+            }
         }
     }
 }
@@ -270,7 +963,16 @@ function handleError(err) {
     setTimeout(() => process.exit(1), 1000); // Ensure stderr has time to flush buffer
 }
 
-function scheduleNextHarvest() {
+function handleSettledPromises(results, originals, rejectCallback) {
+    results.forEach((result, i) => {
+        if (result.status !== 'fulfilled') rejectCallback(originals[i], new Error(result.reason.message))
+    });
+    return results
+        .filter(result => result.status === 'fulfilled')
+        .map(result => result.value);
+}
+
+async function scheduleNextHarvest() {
     executionWindowCenter += CONFIG.EXECUTION.INTERVAL;
     executionDrift = Util.randomIntFromInterval(-1 * CONFIG.EXECUTION.INTERVAL_WINDOW, CONFIG.EXECUTION.INTERVAL_WINDOW);
     const now = Date.now();
@@ -279,62 +981,260 @@ function scheduleNextHarvest() {
     console.log(`New execution window: ${new Date(executionWindowCenter - CONFIG.EXECUTION.INTERVAL_WINDOW).toLocaleTimeString()} - ${new Date(executionWindowCenter + CONFIG.EXECUTION.INTERVAL_WINDOW).toLocaleTimeString()}`);
     console.log(`Scheduled next harvest() for ${new Date(now + delay).toLocaleString()}`);
     console.log();
-    setTimeout(harvest, delay);
+    await Util.wait(delay);
+    await harvest();
 }
 
 
 ///// Helper functions
 
-async function initializeContracts(controllerAddresses, wantAddress) {
-    if (!web3.utils.isAddress(wantAddress)) throw new Error(`Invalid want address ${wantAddress}`);
+async function initializeContracts(controllerAddresses, snowglobeAddress) {
+    if (!ethers.utils.isAddress(snowglobeAddress)) throw new Error(`Invalid snowGlobe address ${snowglobeAddress}`);
 
     for (const controllerAddress of controllerAddresses) {
-        if (!web3.utils.isAddress(controllerAddress)) throw new Error(`Invalid controller address ${controllerAddress}`);
+        if (!ethers.utils.isAddress(controllerAddress)) throw new Error(`Invalid controller address ${controllerAddress}`);
 
-        const controller = new web3.eth.Contract(ABI.CONTROLLER, controllerAddress);
-        const snowglobeAddress = await controller.methods.globes(wantAddress).call();
-        const strategyAddress = await controller.methods.strategies(wantAddress).call();
+        const controller = new ethers.Contract(controllerAddress, ABI.CONTROLLER, signer);
+        const snowglobe = new ethers.Contract(snowglobeAddress, ABI.SNOWGLOBE, signer);
 
-        if (strategyAddress !== ZERO_ADDRESS && snowglobeAddress !== ZERO_ADDRESS) return {
+        const wantAddress = await snowglobe.token();
+        if (wantAddress === ZERO_ADDRESS) continue;
+
+        const strategyAddress = await controller.strategies(wantAddress);
+        if (strategyAddress === ZERO_ADDRESS) continue;
+
+        const controllerSnowglobeAddress = await controller.globes(wantAddress);
+
+        if (controllerSnowglobeAddress !== snowglobeAddress) continue;
+
+        let type, poolToken = new ethers.Contract(wantAddress, ABI.UNI_V2_POOL, signer);
+        const strategyContract = new ethers.Contract(strategyAddress, ABI.STRATEGY, signer);
+
+        const strategyName = await strategyContract.getName();
+
+        try {
+            //test if this is an LP Token
+            await poolToken.token1();
+            type = 'LP';
+        } catch (error) {
+            //not LP
+            poolToken = new ethers.Contract(wantAddress, ABI.ERC20, signer);
+            try {
+                //test if this is from benqi
+                await strategyContract.benqi();
+                type = 'BENQI';
+            } catch (error) {
+                //AAVE pool
+                try {
+                    await strategyContract.getWavaxAccrued();
+                    type = 'AAVE';
+                } catch (error) {
+                    try {
+                        //test if this is from banker joe
+                        await strategyContract.jToken();
+                        type = 'BANKER';
+                    } catch (error) {
+                        try {
+                            //test if this is from teddy
+                            await strategyContract.stake_teddy_rewards();
+                            type = 'TEDDY';
+                        } catch (error) {
+                            type = 'ERC20';
+                        }
+                    }
+                }
+            }
+        }
+
+        return {
             controller,
-            want: new web3.eth.Contract(ABI.PANGOLIN_POOL, wantAddress),
-            snowglobe: new web3.eth.Contract(ABI.SNOWGLOBE, snowglobeAddress),
-            strategy: new web3.eth.Contract(ABI.STRATEGY, strategyAddress),
+            snowglobe,
+            want: poolToken,
+            wantAddress,
+            type,
+            strategyName,
+            strategy: strategyContract,
         };
     }
-    throw new Error(`Could not identify a strategy & snowglobe for want address ${wantAddress}`);
+
+    throw new Error(`Could not identify contracts for snowglobe ${snowglobeAddress}`);
 }
 
 async function getPoolShareAsUSD(poolContract) {
-    const token0Address = (await poolContract.methods.token0().call()).toLowerCase();
-    const token1Address = (await poolContract.methods.token1().call()).toLowerCase();
-    const { _reserve0, _reserve1 } = await poolContract.methods.getReserves().call();
-    const reserve0 = web3.utils.toBN(_reserve0);
-    const reserve1 = web3.utils.toBN(_reserve1);
-    const totalSupply = web3.utils.toBN(await poolContract.methods.totalSupply().call());
+    const token0Address = await poolContract.token0();
+    const token1Address = await poolContract.token1();
+    const reserves = await poolContract.getReserves();
+    const totalSupply = await poolContract.totalSupply();
+    try {
+        if (token0Address === WAVAX_ADDRESS) {
+            const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+            return reserves._reserve0.mul(2).mul(priceWAVAX).div(totalSupply);
+        } else if (token1Address === WAVAX_ADDRESS) {
+            const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+            return reserves._reserve1.mul(2).mul(priceWAVAX).div(totalSupply);
+        } else if (token0Address === PNG_ADDRESS) {
+            const pricePNG = await estimatePriceOfAsset(PNG_ADDRESS, 18);
+            return reserves._reserve0.mul(2).mul(pricePNG).div(totalSupply);
+        } else if (token1Address === PNG_ADDRESS) {
+            const pricePNG = await estimatePriceOfAsset(PNG_ADDRESS, 18);
+            return reserves._reserve1.mul(2).mul(pricePNG).div(totalSupply);
+        } else if (token0Address === JOE_ADDRESS) {
+            const priceJOE = await estimatePriceOfAsset(JOE_ADDRESS, 18);
+            return reserves._reserve0.mul(2).mul(priceJOE).div(totalSupply);
+        } else if (token1Address === JOE_ADDRESS) {
+            const priceJOE = await estimatePriceOfAsset(JOE_ADDRESS, 18);
+            return reserves._reserve1.mul(2).mul(priceJOE).div(totalSupply);
+        } else {
+            try {
+                const token0Contract = new ethers.Contract(token0Address, ABI.ERC20, signer);
+                const token0Decimals = await token0Contract.decimals();
+                const priceToken0 = await estimatePriceOfAsset(token0Address, token0Decimals);
+                const correction = ethers.BigNumber.from(18 - token0Decimals);
+                let priceLP;
+                if (correction > 0) {
+                    priceLP = reserves._reserve0.mul(ethers.BigNumber.from(10).pow(correction)).mul(2).mul(priceToken0).div(totalSupply);
+                } else {
+                    priceLP = reserves._reserve0.mul(2).mul(priceToken0).div(totalSupply);
+                }
 
-    if (token0Address === WAVAX_ADDRESS) {
-        const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
-        return reserve0.muln(2).mul(priceWAVAX).div(totalSupply);
-    } else if (token1Address === WAVAX_ADDRESS) {
-        const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
-        return reserve1.muln(2).mul(priceWAVAX).div(totalSupply);
-    } else if (token0Address === PNG_ADDRESS) {
-        const pricePNG = await estimatePriceOfAsset(PNG_ADDRESS, 18);
-        return reserve0.muln(2).mul(pricePNG).div(totalSupply);
-    } else if (token1Address === PNG_ADDRESS) {
-        const pricePNG = await estimatePriceOfAsset(PNG_ADDRESS, 18);
-        return reserve1.muln(2).mul(pricePNG).div(totalSupply);
-    } else {
-        console.error(`Could not convert want address ${poolContract._address} to USD`);
-        return web3.utils.toBN('0');
+                return priceLP
+            } catch (error) {
+                const token1Contract = new ethers.Contract(token1Address, ABI.ERC20, signer);
+                const token1Decimals = await token1Contract.decimals();
+                const priceToken1 = await estimatePriceOfAsset(token1Address, token1Decimals);
+                const correction = ethers.BigNumber.from(18 - token1Decimals);
+                let priceLP;
+                if (correction > 0) {
+                    priceLP = reserves._reserve1.mul(ethers.BigNumber.from(10).pow(correction)).mul(2).mul(priceToken1).div(totalSupply);
+                } else {
+                    priceLP = reserves._reserve1.mul(2).mul(priceToken1).div(totalSupply);
+                }
+
+                return priceLP
+            }
+        }
+    } catch (error) {
+        console.error(`Could not convert want address ${poolContract.address} to USD`);
+        console.error(error.message);
+        return ethers.BigNumber.from('0');
     }
 }
 
-async function estimatePriceOfAsset(assetAddress, assetDecimals) {
-    const PANGOLIN_ROUTER_ADDRESS = '0xe54ca86531e17ef3616d22ca28b0d458b6c89106';
+async function estimatePriceOfAsset(assetAddress, assetDecimals, isAxial = false, isPlatypus = false) {
+    if (isAxial || isPlatypus) {
+        const virtualPrice = ethers.utils.parseUnits("1", 18);
+        return virtualPrice;
+    }
+    const { ROUTER, ROUTE } = VALUATION(assetAddress);
+    const destination = ROUTE[ROUTE.length - 1];
+    const destinationContract = new ethers.Contract(destination, ABI.ERC20, signer);
+    const destinationDecimals = parseInt(await destinationContract.decimals());
+    const correction = ethers.BigNumber.from(assetDecimals - destinationDecimals);
 
-    const routerContract = new web3.eth.Contract(ABI.PANGOLIN_ROUTER, PANGOLIN_ROUTER_ADDRESS);
-    const [input, output] = await routerContract.methods.getAmountsOut('1' + '0'.repeat(assetDecimals), [assetAddress, DAI_ADDRESS]).call();
-    return web3.utils.toBN(output);
+    const routerContract = new ethers.Contract(ROUTER, ABI.UNI_V2_ROUTER, signer);
+    let output;
+    if (ROUTE.length === 2) {
+        const [token0, token1] = await routerContract.getAmountsOut('1' + '0'.repeat(assetDecimals), ROUTE);
+        output = token1;
+    } else {
+        const [token0, token1, token2] = await routerContract.getAmountsOut('1' + '0'.repeat(assetDecimals), ROUTE);
+        output = token2;
+    }
+
+    let price = output;
+    if (correction > 0) {
+        price = output.mul(ethers.BigNumber.from(10).pow(correction));
+    }
+
+    //calculate the value of the token through AVAX price
+    if (destination === WAVAX_ADDRESS) {
+        const priceWAVAX = await estimatePriceOfAsset(WAVAX_ADDRESS, 18);
+        price = price.mul(priceWAVAX).div('1' + '0'.repeat(18));
+    }
+    return price;
+}
+
+const roundDown = (value, decimals = 18) => {
+    const valueString = value.toString();
+    const integerString = valueString.split('.')[0];
+    const decimalsString = valueString.split('.')[1];
+    if (!decimalsString) {
+        return integerString
+    }
+    return `${integerString}.${decimalsString.slice(0, decimals)}`;
+}
+
+const floatToBN = (number, decimals = 18) => {
+    try {
+        if (number > 0) {
+            return ethers.utils.parseUnits(roundDown(number, decimals), decimals);
+        } else {
+            return ethers.utils.parseUnits("0");
+        }
+    } catch (error) {
+        console.error(error.message);
+    }
+}
+
+const getPoolInfo = (want, mcAddress) => {
+    let arrayIndex = -1;
+    switch (mcAddress.toLowerCase()) {
+        case AXIAL_MASTERCHEF.toLowerCase():
+            arrayIndex = 0;
+            break;
+        case TJ_MASTERCHEF.toLowerCase():
+            arrayIndex = 1;
+            break;
+        default:
+            throw new Error("Masterchef not found");
+    }
+
+    const poolId = masterchefPoolIds[arrayIndex].findIndex(o => o.lpToken.toLowerCase() === want.toLowerCase());
+    const poolInfo = masterchefPoolIds[arrayIndex][poolId];
+    return {
+        poolId,
+        poolInfo
+    };
+}
+
+const ran24h = async (strategyAddress, topic) => {
+
+    async function queryTransactions(startblock, endblock) {
+        const axios = require('axios');
+
+        const config = {
+            method: 'get',
+            url: `https://api.snowtrace.io/api` +
+                `?module=account` +
+                `&action=txlist` +
+                `&address=${strategyAddress}` +
+                `&startblock=${startblock}` +
+                `&endblock=${endblock}` +
+                `&sort=asc` +
+                `&apikey=${Config.SNOWTRACE.API_KEY}`,
+            headers: {}
+        };
+
+        const result = await axios(config);
+
+        return result.data;
+    }
+
+    const txs = await queryTransactions(currentBlockNumber - blocksDaily, currentBlockNumber);
+
+    if (!txs.result) {
+        return;
+    }
+
+    let foundTopic = false;
+
+    for (const transaction of txs.result) {
+
+        if (transaction.input === topic) {
+            foundTopic = true;
+        }
+    }
+
+    return foundTopic;
+
 }
